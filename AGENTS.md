@@ -1,83 +1,86 @@
-# AGENTS.md — InventarioY
+# AGENTS.md — InventarioY Desktop
 
 ## Stack
-React 19 + TypeScript 5.8 + Vite 6 + Tailwind v4 + Zustand 5 + Supabase + Dexie 4
+React 19 + TypeScript 5.8 + Vite 6 + Tailwind v4 + Zustand 5 + Fastify local + SQLite (better-sqlite3) + Electron.
 
 ## Setup / Entorno
-- `npm install` → `.env` con `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-- `npm run dev` (puerto 3000, host 0.0.0.0)
-- **⚠️ Mismo proyecto Supabase para desarrollo y producción. Cualquier escritura/prueba toca datos reales.**
-- Migraciones SQL en `supabase/migrations/`. Edge Function en `supabase/functions/`.
+- `npm install` (no requiere API keys; la app es 100% local).
+- `npm run desktop` — build vite + tsc electron + `electron .` (levanta Fastify local en `http://127.0.0.1:<port>` y sirve `dist/`).
+- `npm run dev` — solo Vite (para desarrollo de UI).
 
 ## Estructura
 ```
+/electron
+├── db/          # schema.ts (migraciones SQLite) + conexión
+├── server/      # index.ts (API Fastify local) + license.ts (validación ed25519)
+├── main.ts      # proceso principal Electron
+└── preload.ts   # expone window.desktop
 src/
-├── store/          # authStore + dbStore (Zustand)
-├── lib/            # supabase, dexieDb, syncEngine, unitConversion, etc.
-├── components/     # ui/ (Button, Input...) + shared (Modal, SyncStatus...)
-├── pages/          # Landing, Login + Dashboard + dashboard/ (16 views)
-├── design-system/  # ThemeProvider + tokens
-├── hooks/          # useIsOnline, useOfflineDisabled
+├── store/       # authStore + dbStore (Zustand)
+├── lib/         # db/localClient.ts (shim localDb), syncEngine (legacy), unitConversion, etc.
+├── components/  # ui/ + shared (LicenseBanner, OfflineLimitBanner, SyncQueuePanel...)
+├── pages/       # Landing, Login, Register (setup) + Dashboard + dashboard/ (16 views)
+├── design-system/# ThemeProvider + tokens
+└── hooks/       # useIsOnline, useOfflineDisabled
 ```
 
 ## dbStore (~5k líneas) — NO LEER COMPLETO
 Usar grep/búsqueda por nombre de interfaz (`Product`, `Sale`, `Recipe`...) o método (`addProduct`, `addSale`...).
 
 ## Auth / Roles
-- **Supabase Auth** (email/password) para sesión + **PIN-based role system** sobre ella
-- Pines en tabla `access_pins` → roles: `owner`, `economist`, `admin`, `supervisor`, `clerk`
-- `MODULE_ROLES` controla qué rol ve qué módulo del dashboard
-- **RLS**: todas las tablas con `user_id = auth.uid()` en migraciones
+- **PIN-based puro**: no hay email/password. `/register` = setup inicial (negocio + PIN) → `POST /api/auth/setup`.
+- Pines en tabla `access_pins` → roles: `owner`, `economist`, `admin`, `supervisor`, `clerk`.
+- `MODULE_ROLES` controla qué rol ve qué módulo del dashboard.
+- Licencia offline: trial 7 días + clave ed25519 (ver `electron/server/license.ts`).
 
-## Offline-first
-- Toda operación chequea `navigator.onLine`
-- Offline: Zustand optimista → Dexie cache → SyncQueue
-- **SyncEngine**: FIFO, batches 20, 5 reintentos (2s/4s/6s/8s/10s), abandona tras 5
-- **Conflictos**: LAST-WRITE-WINS sin merge; duplicados (23505) eliminados; RLS (42501) abandono inmediato
-- **Realtime guard**: `isLocallyCreating()` con ventana 30s evita doble-aplicación
-- **customFetch**: offline retorna 503 en vez de error de red
-- **`restoreFromCache`**: solo corre `replayPendingSyncQueue` si `navigator.onLine`
+## Modelo de datos / Backend
+- **Backend local**: Fastify embebido. El renderer usa `src/lib/db/localClient.ts` (shim `localDb as supabase`).
+- **Base de datos**: SQLite local. Migraciones en `electron/db/schema.ts`.
+- **NO hay tráfico a internet en runtime** (ni Supabase, ni Google Fonts, ni PWA).
+- Endpoints de licencia: `GET /api/license/status`, `POST /api/license/activate`.
+- Escrituras bloqueadas (403 `LICENSE_EXPIRED`) cuando la licencia vence; solo `settings` queda escribible.
 
 ## Módulo Ventas (SalesView)
-- `rawInputValues: Record<string, string>` preserva input al tipear
-- Coma `,` como decimal; blur parsea + clamp + toast
-- Recetas: solo enteros (`getUnitStep(u, true)=1`, `getUnitMin(u, true)=1`, initial=1)
-- Cart: `displayUnit` + selector (excluye u/sac/lat); `convertUnit()` con `normalizeUnit()` previo
-- `consumeFromTransit` offline: bulkPut todo a Dexie ANTES de filtrar remaining>0 a Zustand
-- `unit: 'porción'` en recetas es intencional (display informativo); `normalizeUnit('porción')` → `'u'` — no se intenta conversión
+- `rawInputValues: Record<string, string>` preserva input al tipear.
+- Coma `,` como decimal; blur parsea + clamp + toast.
+- Recetas: solo enteros (`getUnitStep(u, true)=1`, `getUnitMin(u, true)=1`, initial=1).
+- Cart: `displayUnit` + selector (excluye u/sac/lat); `convertUnit()` con `normalizeUnit()` previo.
+- `unit: 'porción'` en recetas es intencional (display informativo); `normalizeUnit('porción')` → `'u'` — no se intenta conversión.
 
 ## Manejo de errores
-- Logger: localStorage (`logger.info/warn/error`, máx 200 entradas)
-- Toasts: `sonner` para feedback de usuario
-- ErrorBoundary envolviendo rutas de dashboard
-- No Sentry / No error tracking externo
+- Logger: localStorage (`logger.info/warn/error`, máx 200 entradas).
+- Toasts: `sonner` para feedback de usuario.
+- ErrorBoundary envolviendo rutas de dashboard.
+- No Sentry / No error tracking externo.
 
 ## Testing
-- **Solo e2e con Playwright**: `tests/offline-stress.spec.ts`, `tests/cuban-cycle.spec.ts`
-- **No hay unit tests.** Si se toca lógica crítica (sync, conversión de unidades, offline), considerar agregar test e2e.
+- **Solo e2e con Playwright**: `tests/offline-stress.spec.ts`, `tests/cuban-cycle.spec.ts`.
+- **No hay unit tests.** Si se toca lógica crítica (licencia, conversión de unidades), considerar agregar test e2e.
 - No asumir cobertura existente.
 
 ## Convenciones de código
-- Componentes: PascalCase, funcionales + hooks, props interface exportada
-- UI primitives: PascalCase en `components/ui/`
-- Stores/utils: camelCase
-- `cn()` para Tailwind merging; CVA para variantes (Button)
-- Estado global (Zustand) para datos de dominio; `useState` para UI efímera
-- Código (variables, funciones, tipos) en inglés; comentarios en español
+- Componentes: PascalCase, funcionales + hooks, props interface exportada.
+- UI primitives: PascalCase en `components/ui/`.
+- Stores/utils: camelCase.
+- `cn()` para Tailwind merging; CVA para variantes (Button).
+- Estado global (Zustand) para datos de dominio; `useState` para UI efímera.
+- Código (variables, funciones, tipos) en inglés; comentarios en español.
 
 ## Commits
-- Español, formato conventional commits: `feat:`, `fix:`, `refactor:`, `style:`
+- Español, formato conventional commits: `feat:`, `fix:`, `refactor:`, `style:`.
 
 ## Anti-patrones / No hacer
-- No tocar RLS/permisos sin revisar migrations + modelo de roles PIN primero
-- No leer `dbStore.ts` completo — usar grep siempre
-- No hacer fetch directo a Supabase desde componentes — pasar por dbStore + offline flow
-- No desactivar `realtimeGuard.ts` sin entender el patrón de doble-aplicación
-- No asumir cobertura de tests donde no existe
-- No ejecutar migraciones SQL ni deletes/cambios masivos sin confirmación explícita — no hay staging, toca datos reales
+- No reintroducir dependencias de red (Supabase, Google Fonts, PWA, service workers).
+- No cambiar el estado de licencia sin revisar `electron/server/license.ts` + migraciones.
+- No leer `dbStore.ts` completo — usar grep siempre.
+- No hacer fetch directo a servicios externos desde componentes — pasar por `localDb` (Fastify local).
+- No ejecutar migraciones ni deletes/cambios masivos sin confirmación explícita — no hay staging, toca la BD local real.
 
 ## Comandos
-- `npm run dev` — servidor de desarrollo
-- `npm run build` — build producción
-- `npm run lint` — `tsc --noEmit` (no hay ESLint/Prettier)
-- `npx playwright test` — tests e2e
+- `npm run desktop` — build + ejecutar app desktop.
+- `npm run dev` — servidor de desarrollo Vite.
+- `npm run build` — build producción del renderer.
+- `npm run lint` — `tsc --noEmit` (no hay ESLint/Prettier).
+- `npx playwright test` — tests e2e.
+- `node scripts/generar-licencia.mjs --codigo ABC123 --meses 1` — generar clave de activación (vendedor).
+- `node scripts/crear-entrega.mjs --cliente "Nombre" [--zip]` — carpeta de entrega por cliente en `entregas/` (instalador + PDFs + LEEME; `--zip` añade ZIP).

@@ -1,6 +1,6 @@
-# Arquitectura y Reglas del Sistema - InventarioY
+# Arquitectura y Reglas del Sistema - InventarioY Desktop
 
-Este documento establece las directrices arquitectónicas, de diseño y de desarrollo de **InventarioY**.
+Este documento establece las directrices arquitectónicas, de diseño y de desarrollo de **InventarioY Desktop**.
 
 ## 1. Stack Tecnológico y Herramientas
 
@@ -9,8 +9,8 @@ Este documento establece las directrices arquitectónicas, de diseño y de desar
 *   **Estilos:** Tailwind CSS v4 con tema oscuro personalizado vía `@theme` en `index.css`.
 *   **Enrutamiento:** React Router v7 para navegación tipo SPA.
 *   **Gestión de Estado:** Zustand 5 (estado global en `authStore` y `dbStore`).
-*   **Backend & Base de Datos:** Supabase (PostgreSQL, Auth, Edge Functions).
-*   **Offline-first:** Dexie (IndexedDB) para caché local + Sync Engine para cola de sincronización.
+*   **Backend local:** Fastify embebido en el proceso Electron (`electron/server/`).
+*   **Base de Datos:** SQLite local vía `better-sqlite3` (`electron/db/`).
 *   **Iconografía:** Lucide React.
 *   **Animaciones:** GSAP.
 *   **Gráficos:** Recharts.
@@ -19,18 +19,20 @@ Este documento establece las directrices arquitectónicas, de diseño y de desar
 
 ## 2. Estructura de Directorios
 
-Estructura plana (no Feature-Sliced):
-
 ```text
+/electron
+  /db            # Migraciones SQLite + conexión (schema.ts, db.ts)
+  /server        # Fastify local (index.ts, license.ts)
+  main.ts        # Proceso principal Electron, sirve dist/ y abre 127.0.0.1:<port>
+  preload.ts     # Expone window.desktop = { isDesktop, platform, print }
 /src
-  /components      # Componentes UI reutilizables
-    /ui            # Primitivos: Button, Input, Switch, NumberInput, Label
-  /lib             # Utilidades de terceros y helpers
-    /hooks         # Custom hooks (useRealTimeClock, usePersistentFilters)
-    /animations    # Hooks de animación GSAP (useStaggerEnter, useModalAnimation, useCountUp)
-  /pages           # Vistas del router
-    /dashboard     # Vistas protegidas del panel principal
-  /store           # Estado global Zustand (authStore, dbStore)
+  /components    # Componentes UI reutilizables
+    /ui          # Primitivos: Button, Input, Switch, NumberInput, Label
+  /lib           # Utilidades y helpers
+    /db          # localClient.ts — shim que expone localDb (API tipo Supabase sobre Fastify local)
+  /pages         # Vistas del router
+    /dashboard   # Vistas protegidas del panel principal
+  /store         # Estado global Zustand (authStore, dbStore)
 ```
 
 ## 3. Reglas de Desarrollo y Buenas Prácticas
@@ -43,15 +45,15 @@ Estructura plana (no Feature-Sliced):
 *   **Componentes Funcionales:** Exclusivamente funcionales y Hooks.
 *   **Responsabilidad Única:** Un componente debe hacer una sola cosa.
 
-### 3.3. Gestión de Datos y Supabase
-*   **RLS (Row Level Security):** Es **CRÍTICO**. Cada tabla debe tener RLS activado con `auth.uid() = user_id`.
-*   **SECURITY DEFINER:** Toda función con `SECURITY DEFINER` debe incluir `SET search_path TO 'public'`.
+### 3.3. Gestión de Datos
+*   **Backend local:** Todo `fetch` del renderer va a rutas relativas que resuelven contra el Fastify local (`electron/server/index.ts`).
+*   **Shim `localClient.ts`:** El `src/lib/db/localClient.ts` se importa como `localDb as supabase` en todo el frontend. NO existe tráfico a internet en runtime.
+*   **Migraciones:** SQLite versionadas en `electron/db/schema.ts`. No hay staging — aplicar migraciones con cuidado.
 
 ### 3.4. Autenticación y Autorización
-*   **Supabase Auth:** Email/password.
-*   **Roles:** `admin`, `user`. Además PIN-based: `owner`, `economist`, `admin`, `supervisor`, `clerk`.
-*   **Auto-login:** Credenciales en localStorage (base64 — mejorable).
-*   **Admin global:** Configurable vía `VITE_ADMIN_EMAIL` (solo para configuración inicial). El rol `admin` en la tabla `profiles` determina los permisos en runtime.
+*   **PIN-based:** No hay registro email/password. `/register` es setup inicial (negocio + PIN) → `POST /api/auth/setup`.
+*   **Roles:** PIN-based: `owner`, `economist`, `admin`, `supervisor`, `clerk` (tabla `access_pins`).
+*   **Licencia:** Trial 7 días + clave de activación ed25519 offline (ver `electron/server/license.ts`).
 
 ### 3.5. Estilos y UI/UX
 *   **Tema:** Claro y Oscuro (toggle en sidebar).
@@ -59,16 +61,18 @@ Estructura plana (no Feature-Sliced):
 *   **Manejo de Errores:** Toasts con Sonner.
 *   **Responsive:** Mobile-first con Tailwind (`hidden md:table-cell`, etc.).
 
-## 4. Arquitectura Multi-Tenant (SaaS)
+## 4. Licencia Offline
 
-1.  **Aislamiento de Datos:** Cada tabla tiene columna `user_id`. RLS con `auth.uid() = user_id`.
-2.  **Suscripciones:** Estado `trial` (7 días), `active`, `past_due`, `canceled`. Control vía `SubscriptionBanner` + `checkSubscriptionActive`.
+1.  **Trial:** 7 días gratis desde el setup. Al vencer, modo solo-lectura.
+2.  **Clave de activación:** ed25519. La app embebe la clave pública (`LICENSE_PUBLIC_KEY`); el vendedor firma con la privada (`scripts/license-private.pem`, gitignored).
+3.  **Precio:** 5,000 CUP/mes. Planes de 1/3/6/12 meses con descuento.
+4.  **Vencido:** se bloquean las escrituras (solo `settings` queda escribible); se mantiene lectura. No se cierra la app.
+5.  **Anti-manipulación:** `maxSeenTime` en settings; tolerancia de 1 día de retroceso de reloj.
 
-## 5. Offline-first
+## 5. Almacenamiento de Datos
 
-1.  **Dexie (IndexedDB):** Cache local de productos, movimientos, etc.
-2.  **Sync Engine (`syncEngine.ts`):** Cola de operaciones pendientes. Procesa al reconectar.
-3.  **Supabase client con fetch custom:** Detecta `navigator.onLine`, retorna 503 si está offline.
+1.  **SQLite local:** única fuente de verdad. Ruta en la carpeta de datos del usuario.
+2.  **Sin sincronización:** la app es 100% offline. No hay Sync Engine ni cola hacia servicios remotos.
 
 ## 6. Flujo de Trabajo (Git/Desarrollo)
 
@@ -76,5 +80,5 @@ Estructura plana (no Feature-Sliced):
 *   **Revisiones:** Antes de dar por terminado un módulo, verificar:
     *   `tsc --noEmit` sin errores
     *   `vite build` exitoso
-    *   ¿Es responsive (móvil/tablet/desktop)?
+    *   `npm run desktop` (build + electron) levanta correctamente
     *   ¿Maneja correctamente los estados de error y carga?
