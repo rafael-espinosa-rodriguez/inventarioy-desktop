@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useDatabaseStore } from '../../store/dbStore';
+import { useDatabaseStore, type Movement } from '../../store/dbStore';
 import { TrendingUp, DollarSign, Package, AlertTriangle, ArrowUpRight, ArrowDownRight, Activity, Download, Search, Calendar, RotateCcw, X } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
@@ -108,6 +108,16 @@ export default function AnalysisView() {
     const fromDate = new Date(auditDateFrom + 'T00:00:00');
     const toDate = new Date(auditDateTo + 'T23:59:59');
 
+    // Cómo afecta cada movimiento al stock real (mismo criterio que dbStore.addMovement)
+    const isSale = (m: Movement) => m.reason?.startsWith('Venta #') || m.reason === 'Venta de producto/ingrediente';
+    const isConsumption = (m: Movement) => m.type === 'SALIDA' && (m.is_consumo_directo === true || m.is_gasto_variable === true);
+    const delta = (m: Movement) => (m.type === 'ENTRADA' || m.type === 'AJUSTE' ? Number(m.quantity) : -Number(m.quantity));
+
+    // Stock real del período: anclar al stock ACTUAL del producto y restar el efecto
+    // de todos los movimientos posteriores al inicio del rango (incluye ventas/consumos).
+    const movementsAfterStart = movements.filter(m => m.product_id === auditProduct && new Date(m.date) > fromDate);
+    const stockInicial = Number(product.quantity) - movementsAfterStart.reduce((sum, m) => sum + delta(m), 0);
+
     const filteredMovements = movements.filter(m => {
       const mDate = new Date(m.date);
       return m.product_id === auditProduct && mDate >= fromDate && mDate <= toDate;
@@ -118,7 +128,15 @@ export default function AnalysisView() {
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
     const salidas = filteredMovements
-      .filter(m => m.type === 'SALIDA' && !m.reason?.startsWith('Venta #') && m.reason !== 'Venta de producto/ingrediente')
+      .filter(m => m.type === 'SALIDA' && !isSale(m) && !isConsumption(m))
+      .reduce((sum, m) => sum + Number(m.quantity), 0);
+
+    const ventas = filteredMovements
+      .filter(isSale)
+      .reduce((sum, m) => sum + Number(m.quantity), 0);
+
+    const consumo = filteredMovements
+      .filter(isConsumption)
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
     const merma = filteredMovements
@@ -129,15 +147,38 @@ export default function AnalysisView() {
       .filter(m => m.type === 'AJUSTE')
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
-    const stockFinal = entradas - salidas - merma + ajustes;
+    // Reconciliación con el inventario real: stock inicial + todo lo que entra/sale en el rango
+    const stockFinal = stockInicial + entradas - salidas - ventas - consumo - merma + ajustes;
+
+    // Balance de cada movimiento (stock justo después de él), anclado al stock actual,
+    // para la columna "Saldo" de la tabla (mismo recorrido inverso que el Kárdex).
+    const balanceByMovementId: Record<string, number> = {};
+    const runningStock: Record<string, number> = {};
+    const allDesc = [...movements].sort((a, b) => {
+      const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+    });
+    for (const m of allDesc) {
+      if (m.product_id !== auditProduct) continue;
+      if (!(m.product_id in runningStock)) {
+        runningStock[m.product_id] = Number(product.quantity);
+      }
+      balanceByMovementId[m.id] = Math.max(0, runningStock[m.product_id]);
+      runningStock[m.product_id] -= delta(m);
+    }
 
     return {
       product,
       entradas,
       salidas,
+      ventas,
+      consumo,
       merma,
       ajustes,
+      stockInicial,
       stockFinal,
+      balanceByMovementId,
       movements: filteredMovements,
     };
   }, [auditProduct, auditDateFrom, auditDateTo, movements, products]);
@@ -148,6 +189,7 @@ export default function AnalysisView() {
       { header: 'Fecha', key: 'date' },
       { header: 'Tipo', key: 'type' },
       { header: 'Cantidad', key: 'quantity' },
+      { header: 'Saldo', key: 'balance' },
       { header: 'Razón', key: 'reason' },
     ];
     
@@ -155,6 +197,7 @@ export default function AnalysisView() {
       ...m,
       date: new Date(m.date).toLocaleDateString('es-CO'),
       quantity: m.type === 'ENTRADA' ? `+${Number(m.quantity).toFixed(3).replace('.', ',')}` : `-${Number(m.quantity).toFixed(3).replace('.', ',')}`,
+      balance: formatNumber(auditData.balanceByMovementId[m.id] ?? 0, 4),
       reason: m.reason || '-',
     }));
     
@@ -422,30 +465,46 @@ export default function AnalysisView() {
         {auditData && (
           <>
             <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              <div className="rounded-lg bg-bg/50 border border-border/30 p-3 text-center">
+                <p className="text-xs text-text-secondary">Stock Inicial</p>
+                <p className="font-mono font-bold text-text mt-1">{formatQuantity(auditData.stockInicial, auditData.product.unit)}</p>
+              </div>
               <div className="rounded-lg bg-success/10 border border-success/30 p-3 text-center">
                 <p className="text-xs text-success">Entradas</p>
-                <p className="font-mono font-bold text-success mt-1">+{auditData.entradas}</p>
+                <p className="font-mono font-bold text-success mt-1">+{formatQuantity(auditData.entradas, auditData.product.unit)}</p>
               </div>
               <div className="rounded-lg bg-danger/10 border border-danger/30 p-3 text-center">
                 <p className="text-xs text-danger">Salidas</p>
-                <p className="font-mono font-bold text-danger mt-1">-{auditData.salidas}</p>
+                <p className="font-mono font-bold text-danger mt-1">-{formatQuantity(auditData.salidas, auditData.product.unit)}</p>
               </div>
+              {auditData.ventas > 0 && (
+                <div className="rounded-lg bg-primary/10 border border-primary/30 p-3 text-center">
+                  <p className="text-xs text-primary">Ventas</p>
+                  <p className="font-mono font-bold text-primary mt-1">-{formatQuantity(auditData.ventas, auditData.product.unit)}</p>
+                </div>
+              )}
+              {auditData.consumo > 0 && (
+                <div className="rounded-lg bg-warning/10 border border-warning/30 p-3 text-center">
+                  <p className="text-xs text-warning">Consumo / Gasto</p>
+                  <p className="font-mono font-bold text-warning mt-1">-{formatQuantity(auditData.consumo, auditData.product.unit)}</p>
+                </div>
+              )}
               {auditData.merma > 0 && (
                 <div className="rounded-lg bg-warning/10 border border-warning/30 p-3 text-center">
                   <p className="text-xs text-warning">Merma</p>
-                  <p className="font-mono font-bold text-warning mt-1">-{auditData.merma}</p>
+                  <p className="font-mono font-bold text-warning mt-1">-{formatQuantity(auditData.merma, auditData.product.unit)}</p>
                 </div>
               )}
               {auditData.ajustes !== 0 && (
                 <div className="rounded-lg bg-bg/50 border border-border/30 p-3 text-center">
                   <p className="text-xs text-text-secondary">Ajustes</p>
-                  <p className="font-mono font-bold text-text mt-1">{auditData.ajustes > 0 ? `+${auditData.ajustes}` : auditData.ajustes}</p>
+                  <p className="font-mono font-bold text-text mt-1">{auditData.ajustes > 0 ? `+${formatQuantity(auditData.ajustes, auditData.product.unit)}` : formatQuantity(auditData.ajustes, auditData.product.unit)}</p>
                 </div>
               )}
               <div className={`rounded-lg border p-3 text-center ${auditData.stockFinal >= 0 ? 'bg-primary/10 border-primary/30' : 'bg-danger/10 border-danger/30'}`}>
-                <p className="text-xs text-text-secondary">Almacén</p>
+                <p className="text-xs text-text-secondary">Stock Final</p>
                 <p className={`font-mono font-bold mt-1 ${auditData.stockFinal >= 0 ? 'text-primary' : 'text-danger'}`}>
-                  {auditData.stockFinal} {auditData.product.unit}
+                  {formatQuantity(auditData.stockFinal, auditData.product.unit)}
                 </p>
               </div>
             </div>
@@ -463,13 +522,14 @@ export default function AnalysisView() {
                     <th className="px-4 py-3 font-medium">Fecha</th>
                     <th className="px-4 py-3 font-medium">Tipo</th>
                     <th className="px-4 py-3 font-medium text-right">Cantidad</th>
+                    <th className="px-4 py-3 font-medium text-right">Saldo</th>
                     <th className="px-4 py-3 font-medium">Razón</th>
                   </tr>
                 </thead>
                 <tbody ref={auditTbodyRef} className="divide-y divide-border">
                   {auditData.movements.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="px-4 py-8 text-center text-text-secondary">
+                      <td colSpan={5} className="px-4 py-8 text-center text-text-secondary">
                         Sin movimientos en este período.
                       </td>
                     </tr>
@@ -491,6 +551,9 @@ export default function AnalysisView() {
                           m.type === 'ENTRADA' ? 'text-success' : 'text-danger'
                         }`}>
                           {m.type === 'ENTRADA' ? '+' : '-'}{formatNumber(Number(m.quantity), 4)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono font-medium text-text-secondary">
+                          {formatNumber(auditData.balanceByMovementId[m.id] ?? 0, 4)}
                         </td>
                         <td className="px-4 py-3 text-text-secondary">{m.reason || '-'}</td>
                       </tr>

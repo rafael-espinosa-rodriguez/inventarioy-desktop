@@ -1,12 +1,10 @@
-import { Package, ShoppingCart, ChefHat, Sparkles, ChevronDown, CheckCircle2, Loader2, Users, Instagram, Facebook, Phone, MapPin, DollarSign, Headphones, MessageCircle, Menu, X, LogIn, UserPlus, ClipboardList, TrendingUp, Store, BarChart3, Database, Activity, Star, Quote, Play } from 'lucide-react';
+import { Package, ShoppingCart, ChefHat, Sparkles, ChevronDown, CheckCircle2, Loader2, Users, Instagram, Facebook, Phone, MapPin, DollarSign, Headphones, MessageCircle, Menu, X, LogIn, UserPlus, ClipboardList, Store, BarChart3, Database, Activity, Star, Quote, Play } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
-import InstallButton from '../components/InstallButton';
 import InventarioYLogo from '../components/InventarioYLogo';
 import TutorialPromptModal, { shouldShowTutorialPrompt } from '../components/TutorialPromptModal';
-import { supabase } from '../lib/supabase';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useAuthStore } from '../store/authStore';
@@ -20,8 +18,6 @@ export default function Landing() {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showTutorialPrompt, setShowTutorialPrompt] = useState(() => shouldShowTutorialPrompt());
-  const [stats, setStats] = useState<{ products: number; movements: number; users: number; sales: number } | null>(null);
-  const [statsError, setStatsError] = useState(false);
   const [isAnnual, setIsAnnual] = useState(false);
 
   // Redirigir si ya está autenticado
@@ -35,23 +31,6 @@ export default function Landing() {
     if (shouldShowTutorialPrompt()) {
       setShowTutorialPrompt(true);
     }
-  }, []);
-
-  useEffect(() => {
-    supabase.rpc('get_public_stats').then(({ data, error }) => {
-      if (error) {
-        console.error('Stats RPC error:', error);
-        setStatsError(true);
-        return;
-      }
-      if (data) {
-        if (typeof data === 'string') {
-          try { setStats(JSON.parse(data)); } catch { setStatsError(true); }
-        } else {
-          setStats(data as any);
-        }
-      }
-    });
   }, []);
 
   // Animaciones con GSAP ScrollTrigger
@@ -116,7 +95,6 @@ export default function Landing() {
           </button>
 
           <div className="hidden md:flex items-center gap-4">
-            <InstallButton />
             <Link to="/login">
               <Button variant="outline" className="hidden sm:inline-flex">Acceder</Button>
             </Link>
@@ -187,18 +165,18 @@ export default function Landing() {
               <div className="mx-auto max-w-3xl space-y-6 lg:space-y-8">
               <div className="hero-fade inline-flex items-center rounded-full border border-primary/50 bg-primary/10 px-3 py-1 text-sm font-medium text-primary shadow-[0_0_15px_rgba(255,193,7,0.2)]">
                 <Sparkles className="mr-2 h-4 w-4 drop-shadow-[0_0_5px_rgba(255,193,7,0.8)]" />
-                7 Días de Prueba Gratis
+                100% Offline — Funciona sin internet
               </div>
               <h1 className="hero-fade text-4xl font-extrabold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
                 Gestione su inventario <span className="text-gradient">fácil y potente</span>
               </h1>
               <p className="hero-fade mx-auto max-w-2xl text-lg text-text-secondary sm:text-xl">
-                La solución integral para restaurantes, cafeterías y comercios en Cuba. Controle su stock, ventas, recetas y personal en un solo lugar.
+                La solución de escritorio para restaurantes, cafeterías y comercios en Cuba. Controle su stock, ventas, recetas y personal, sin necesidad de internet.
               </p>
               <div className="hero-fade flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 pt-2 sm:pt-4">
                 <Link to="/register">
                   <Button size="lg" className="w-full sm:w-auto text-sm sm:text-base h-11 sm:h-12 px-6 sm:px-8">
-                    Comenzar Gratis
+                    Configurar mi negocio
                   </Button>
                 </Link>
                 <a href="#pricing">
@@ -281,7 +259,7 @@ export default function Landing() {
                   <DollarSign className="h-8 w-8 text-primary" />
                 </div>
                 <h3 className="text-lg font-semibold mb-2">Precio Accesible</h3>
-                <p className="text-text-secondary text-sm">Pensado para su negocio en Cuba: comience con 7 días sin pagar. Sí desea continuar luego de este tiempo, abone 5,000 CUP por mes. Ni un centavo más.</p>
+                <p className="text-text-secondary text-sm">Pensado para su negocio en Cuba. Plan de 5,000 CUP al mes por negocio, sin costos ocultos. Empiece con 7 días de prueba gratis.</p>
               </div>
               <div className="text-center fade-up" style={{ transitionDelay: '200ms' }}>
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
@@ -290,69 +268,6 @@ export default function Landing() {
                 <h3 className="text-lg font-semibold mb-2">Soporte Cercano</h3>
                 <p className="text-text-secondary text-sm">Atención personalizada directamente por nosotros. Le acompañamos en todo el proceso</p>
               </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Trust Badges */}
-        <section className="py-12 bg-surface/50">
-          <div className="container mx-auto px-4">
-            <div className="flex flex-wrap justify-center gap-8 md:gap-16">
-              <div className="flex items-center gap-3 fade-up">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                  <svg className="h-5 w-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-text">Datos seguros</p>
-                  <p className="text-xs text-text-secondary">Encriptación SSL</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 fade-up" style={{ transitionDelay: '100ms' }}>
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                  <svg className="h-5 w-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-text">Privacidad garantizada</p>
-                  <p className="text-xs text-text-secondary">Sus datos son suyos</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 fade-up" style={{ transitionDelay: '200ms' }}>
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-                  <svg className="h-5 w-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" /></svg>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-text">100% en la nube</p>
-                  <p className="text-xs text-text-secondary">Accede desde cualquier lugar</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Estadísticas en tiempo real */}
-        <section className="py-16">
-          <div className="container mx-auto px-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-8">
-              {[
-                { icon: Package, label: 'Productos', value: stats?.products ?? '—', color: statsError ? 'text-text-muted' : 'text-primary' },
-                { icon: TrendingUp, label: 'Movimientos', value: stats?.movements ?? '—', color: statsError ? 'text-text-muted' : 'text-primary' },
-                { icon: ShoppingCart, label: 'Ventas', value: stats?.sales ?? '—', color: statsError ? 'text-text-muted' : 'text-primary' },
-                { icon: Users, label: 'Usuarios', value: stats?.users ?? '—', color: statsError ? 'text-text-muted' : 'text-primary' },
-              ].map((stat, idx) => (
-                <div key={stat.label} className="fade-up text-center rounded-2xl border border-border/50 bg-surface p-6 hover:border-primary/30 transition-all" style={{ transitionDelay: `${idx * 100}ms` }}>
-                  <div className={`mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl ${stat.color}/10`}>
-                    <stat.icon className={`h-6 w-6 ${stat.color}`} />
-                  </div>
-                  <div className="text-3xl font-bold mb-1">
-                    {stat.value !== undefined && stat.value !== null ? (
-                      <span>{stat.value.toLocaleString()}</span>
-                    ) : (
-                      <span className="text-text-secondary/40">---</span>
-                    )}
-                  </div>
-                  <div className="text-sm text-text-secondary">{stat.label}</div>
-                </div>
-              ))}
             </div>
           </div>
         </section>
@@ -415,24 +330,24 @@ export default function Landing() {
                   <UserPlus className="h-7 w-7 text-black" />
                   <span className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs font-bold text-primary">1</span>
                 </div>
-                <h3 className="text-lg font-semibold mb-2">Regístrese</h3>
-                <p className="text-text-secondary text-sm">Cree su cuenta en segundos. Sin necesidad de tarjeta de crédito.</p>
+                <h3 className="text-lg font-semibold mb-2">Configure su negocio</h3>
+                <p className="text-text-secondary text-sm">Regístrese con el nombre de su negocio y un PIN de acceso. Todo queda en su equipo.</p>
               </div>
               <div className="text-center fade-up" style={{ transitionDelay: '100ms' }}>
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary relative">
                   <Sparkles className="h-7 w-7 text-black" />
                   <span className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs font-bold text-primary">2</span>
                 </div>
-                <h3 className="text-lg font-semibold mb-2">Pruebe gratis</h3>
-                <p className="text-text-secondary text-sm">Use todos los beneficios durante 7 días sin pagar nada.</p>
+                <h3 className="text-lg font-semibold mb-2">Cree sus PINs de acceso</h3>
+                <p className="text-text-secondary text-sm">Asigne PINs con roles a sus empleados y controle quién accede a cada módulo.</p>
               </div>
               <div className="text-center fade-up" style={{ transitionDelay: '200ms' }}>
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary relative">
                   <DollarSign className="h-7 w-7 text-black" />
                   <span className="absolute -top-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs font-bold text-primary">3</span>
                 </div>
-                <h3 className="text-lg font-semibold mb-2">Suscríbase</h3>
-                <p className="text-text-secondary text-sm">Si le gusta, aboná 5,000 CUP/mes. Sin contratos ni compromisos.</p>
+                <h3 className="text-lg font-semibold mb-2">Gestione sin internet</h3>
+                <p className="text-text-secondary text-sm">Inventario, ventas, recetas y personal, todo disponible 100% sin conexión.</p>
               </div>
             </div>
           </div>
@@ -493,7 +408,7 @@ export default function Landing() {
           <div className="container mx-auto px-4">
             <div className="text-center mb-16 fade-up">
               <h2 className="text-3xl font-bold tracking-tight sm:text-4xl mb-4">Precio simple y transparente</h2>
-              <p className="text-text-secondary max-w-2xl mx-auto">Sin sorpresas ni costos ocultos. Un solo plan con todo incluido.</p>
+              <p className="text-text-secondary max-w-2xl mx-auto">Sin sorpresas ni costos ocultos. Un solo plan con todo incluido. Pago manual y activación sin conexión.</p>
             </div>
 
             {/* Toggle Anual / Mensual */}
@@ -531,9 +446,14 @@ export default function Landing() {
                     <>
                       <span className="text-5xl font-extrabold">5,000 CUP</span>
                       <span className="text-text-secondary">/mes</span>
-                      <p className="mt-4 text-sm text-text-secondary">7 Días de Prueba Gratis. Sin costos ocultos.</p>
+                      <p className="mt-4 text-sm text-text-secondary">Activación por clave de licencia. Funciona 100% sin internet.</p>
                     </>
                   )}
+                </div>
+
+                <div className="mb-6 rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-center">
+                  <p className="text-sm font-medium text-success">Pruebe gratis 7 días</p>
+                  <p className="mt-0.5 text-xs text-text-secondary">Configure su negocio y use todas las funciones sin pagar. Después, actívelo con su clave.</p>
                 </div>
                 
                 <ul className="mb-8 grid grid-cols-2 gap-3">
@@ -552,7 +472,7 @@ export default function Landing() {
                     "Gráficos y estadísticas en tiempo real",
                     "Análisis de rotación y auditoría de inventario",
                     "Exportación de datos a Excel",
-                    "Acceso desde cualquier dispositivo con internet",
+                    "Funciona 100% sin internet",
                     "Soporte prioritario",
                   ].map((item) => (
                     <li key={item} className="flex items-start gap-2">
@@ -563,8 +483,11 @@ export default function Landing() {
                 </ul>
                 
                 <Link to="/register" className="block">
-                  <Button className="w-full h-12 text-base">Comenzar Prueba Gratis</Button>
+                  <Button className="w-full h-12 text-base">Comenzar Ahora</Button>
                 </Link>
+                <p className="mt-3 text-center text-xs text-text-secondary">
+                  ¿Dudas? Contáctenos por WhatsApp <span className="font-medium">+53 54523884</span>
+                </p>
               </div>
             </div>
           </div>
@@ -579,20 +502,24 @@ export default function Landing() {
             <div className="space-y-4 fade-up" style={{ transitionDelay: '100ms' }}>
               {[
                 {
-                  q: "¿Cómo funciona la prueba gratis?",
-                  a: "Al registrarse, obtiene automáticamente 7 días de acceso completo a todas las funciones del Plan Profesional."
+                  q: "¿Cómo empiezo a usar InventarioY?",
+                  a: "Abra la aplicación y en la pantalla de registro configure el nombre de su negocio y un PIN de acceso. Con ese PIN podrá iniciar sesión y crear PINs con roles para sus empleados."
                 },
                 {
-                  q: "¿Necesito instalar algún software?",
-                  a: "No, InventarioY es 100% basado en la nube. Puede acceder desde cualquier dispositivo con conexión a internet."
+                  q: "¿Necesito internet para usarlo?",
+                  a: "No. InventarioY es una aplicación de escritorio que funciona 100% sin conexión. Todos sus datos se guardan localmente en su equipo."
                 },
                 {
                   q: "¿Puedo tener múltiples usuarios?",
-                  a: "Sí, puede compartir sus credenciales con su gerente o encargado. El sistema está diseñado para que el dueño y su equipo de confianza lo utilicen."
+                  a: "Sí, puede crear PINs de acceso con distintos roles (dueño, administrador, supervisor, dependiente). El sistema está diseñado para que el dueño y su equipo de confianza lo utilicen."
                 },
                 {
-                  q: "¿Cómo se realiza el pago?",
-                  a: "El pago se realiza de forma manual y directa con nuestro equipo local. Una vez realizado el pago, activaremos su suscripción en el sistema."
+                  q: "¿Cómo adquiero la aplicación?",
+                  a: "Descargue la versión de escritorio y configúrela: tendrá 7 días de prueba gratis con todas las funciones. Para seguir usándola, contacte a nuestro equipo por WhatsApp, realice el pago (efectivo o transferencia) y reciba su clave de activación."
+                },
+                {
+                  q: "¿Cuánto cuesta y cómo se renueva?",
+                  a: "El plan profesional cuesta 5,000 CUP al mes. Se renueva de forma manual: cuando su licencia venza, contáctenos para generar una nueva clave. Existen planes de 3, 6 y 12 meses con descuento."
                 }
               ].map((faq, idx) => {
                 const isOpen = openFaq === idx;

@@ -14,6 +14,7 @@ const badgeVariants = cva(
         info: "bg-blue-500/15 text-blue-400 border border-blue-500/30",
         outline: "border border-border text-text-secondary",
         ghost: "bg-surface-hover text-text-secondary",
+        vitalicia: "vitalicia-glow bg-primary/10 border border-primary/40 font-semibold tracking-wide",
       },
       size: {
         sm: "px-2 py-0 text-[10px]",

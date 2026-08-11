@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { useDatabaseStore } from '../../store/dbStore';
-import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff } from 'lucide-react';
+import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff, KeyRound, X, Crown } from 'lucide-react';
+import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
-import { supabase } from '../../lib/supabase';
+import { localDb as supabase } from '../../lib/db/localClient';
 import { toast } from 'sonner';
-import { validateNumber, getNumberFromString } from '../../lib/utils';
+import { validateNumber, getNumberFromString, esVitalicia } from '../../lib/utils';
 import { Switch } from '../../components/ui/switch';
 import AccessPinsConfig from '../../components/AccessPinsConfig';
-import SyncQueuePanel from '../../components/SyncQueuePanel';
 import QRCode from 'react-qr-code';
 import { useOfflineAction } from '../../hooks/useOfflineDisabled';
 import OfflineLimitBanner from '../../components/OfflineLimitBanner';
 
 export default function SettingsView() {
-  const { user, fetchUser } = useAuthStore();
+  const { user, fetchUser, activateLicense } = useAuthStore();
   const { disabled: isOffline, message: offlineMessage } = useOfflineAction('guardar configuración del perfil');
   
   const [formData, setFormData] = useState({
@@ -39,6 +40,10 @@ export default function SettingsView() {
   });
   const [isSaving, setIsSaving] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showLicenseModal, setShowLicenseModal] = useState(false);
+  const [licenseKey, setLicenseKey] = useState('');
+  const [activating, setActivating] = useState(false);
+  const [menuUrl, setMenuUrl] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -62,6 +67,26 @@ export default function SettingsView() {
       });
     }
   }, [user]);
+
+  useEffect(() => {
+    const buildMenuUrl = async () => {
+      if (!user?.id) {
+        setMenuUrl('');
+        return;
+      }
+      try {
+        const res = await supabase.meta();
+        const ips: string[] = Array.isArray(res?.data?.ips) ? res.data.ips : [];
+        const lan = ips.find((ip) => ip && !ip.startsWith('127.') && !ip.startsWith('0.') && ip !== '::1');
+        if (lan) {
+          setMenuUrl(`http://${lan}:${window.location.port}/menu?b=${user.id}`);
+          return;
+        }
+      } catch { /* usa el fallback */ }
+      setMenuUrl(`${window.location.origin}/menu?b=${user.id}`);
+    };
+    buildMenuUrl();
+  }, [user?.id]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,36 +150,24 @@ export default function SettingsView() {
     setIsSubmitting(true);
     
     try {
-      // Verificar si la columna business_code existe
-    const { data: testData, error: testError } = await supabase
-      .from('profiles')
-      .select('business_code')
-      .eq('id', user.id)
-      .single();
-
-    const businessCodeSupported = !testError || !testError.message?.includes('business_code');
-
-    const updateData: any = {
-      name: formData.name,
-      business_name: formData.businessName,
-      generate_ticket: formData.generateTicket,
-      ticket_message: formData.ticketMessage,
-      usd_enabled: currencySettings.usdEnabled,
-      usd_rate: currencySettings.usdRate,
-      eur_enabled: currencySettings.eurEnabled,
-      eur_rate: currencySettings.eurRate,
-      cup_transfer_enabled: currencySettings.cupTransferEnabled,
-      phone: formData.phone,
-      address: formData.address,
-      business_hours: formData.businessHours,
-    };
-
-    if (businessCodeSupported) {
-      updateData.business_code = formData.businessCode.toLowerCase().trim();
-    }
+      // Versión desktop local: los datos de perfil viven en user_session.
+      const updateData: any = {
+        name: formData.name,
+        businessName: formData.businessName,
+        ticketMessage: formData.ticketMessage,
+        phone: formData.phone,
+        address: formData.address,
+        businessHours: formData.businessHours,
+        business_code: formData.businessCode.toLowerCase().trim(),
+        usdEnabled: currencySettings.usdEnabled ? 1 : 0,
+        usdRate: currencySettings.usdRate,
+        eurEnabled: currencySettings.eurEnabled ? 1 : 0,
+        eurRate: currencySettings.eurRate,
+        cupTransferEnabled: currencySettings.cupTransferEnabled ? 1 : 0,
+      };
 
     const { error } = await supabase
-      .from('profiles')
+      .from('user_session')
       .update(updateData)
       .eq('id', user.id);
 
@@ -198,6 +211,24 @@ export default function SettingsView() {
     }
   };
 
+  const handleLicenseActivate = async () => {
+    if (!licenseKey.trim()) {
+      toast.error('Ingrese la clave de activación');
+      return;
+    }
+    setActivating(true);
+    const res = await activateLicense(licenseKey);
+    setActivating(false);
+    if (res.success) {
+      toast.success('Licencia activada correctamente');
+      setLicenseKey('');
+      setShowLicenseModal(false);
+      await fetchUser();
+    } else {
+      toast.error(res.error || 'Clave de activación inválida');
+    }
+  };
+
   return (
     <>
       <div className="space-y-6 max-w-7xl">
@@ -216,7 +247,7 @@ export default function SettingsView() {
             ============================================ */}
         <div className="grid gap-6 md:grid-cols-2">
           
-          {/* 1.1 Estado de la Cuenta */}
+          {/* 1.1 Estado de la Cuenta y Licencia */}
           <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
             <h2 className="text-lg font-semibold text-text mb-4 flex items-center gap-2">
               <Shield className="h-5 w-5 text-primary" />
@@ -225,21 +256,74 @@ export default function SettingsView() {
             <div className="space-y-4 text-sm">
               <div className="flex justify-between items-center py-2 border-b border-border/50">
                 <span className="text-text-secondary">Rol</span>
-                <span className="font-medium text-text capitalize">{user?.role}</span>
+                <span className="font-medium text-text capitalize">{user?.role === 'owner' ? 'Dueño' : user?.role}</span>
               </div>
               <div className="flex justify-between items-center py-2 border-b border-border/50">
-                <span className="text-text-secondary">Plan</span>
+                <span className="text-text-secondary">Licencia</span>
                 <div className="inline-flex items-center rounded-full border border-primary/50 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
-                  {user?.subscription?.status === 'trialing' ? 'Prueba Gratuita' : 'Plan Profesional'}
+                  {user?.license?.status === 'active'
+                    ? 'Activa'
+                    : user?.license?.status === 'trialing'
+                      ? 'Prueba Gratis'
+                      : 'Vencida'}
                 </div>
               </div>
-              {user?.subscription?.status === 'trialing' && (
+              <div className="flex justify-between items-center py-2 border-b border-border/50">
+                <span className="text-text-secondary">Código de negocio</span>
+                <span className="font-mono font-medium tracking-widest text-primary">{user?.businessCode || '—'}</span>
+              </div>
+              {user?.license?.status === 'active' && user?.license?.validUntil && (
                 <div className="flex justify-between items-center py-2 border-b border-border/50">
-                  <span className="text-text-secondary">Fin de prueba</span>
-                  <span className="font-medium text-text">
-                    {new Date(user?.subscription?.trialEndsAt || Date.now()).toLocaleDateString('es-ES')}
-                  </span>
+                  <span className="text-text-secondary">Válida hasta</span>
+                  {esVitalicia(user.license.validUntil) ? (
+                    <Badge variant="vitalicia">
+                      <Crown className="h-3 w-3 text-primary" />
+                      <span className="vitalicia-text">Licencia vitalicia</span>
+                    </Badge>
+                  ) : (
+                    <span className="font-medium text-text">
+                      {new Date(user.license.validUntil).toLocaleDateString('es-ES')} ({user.license.daysRemaining} días)
+                    </span>
+                  )}
                 </div>
+              )}
+              {user?.license?.status === 'trialing' && (
+                <>
+                  <div className="flex justify-between items-center py-2 border-b border-border/50">
+                    <span className="text-text-secondary">Fin de prueba</span>
+                    <span className="font-medium text-text">
+                      {user.license.trialEndsAt
+                        ? `${new Date(user.license.trialEndsAt).toLocaleDateString('es-ES')} (${user.license.daysRemaining} días)`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-text-secondary">
+                    Al vencer la prueba necesita activar su licencia. Coordine el pago mensual de{' '}
+                    <strong>5,000 CUP</strong> con el vendedor (+53 54523884) y active con su clave.
+                  </div>
+                </>
+              )}
+              {user?.license?.status === 'expired' && (
+                <div className="rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-text-secondary">
+                  Su licencia está vencida: la app está en modo solo-lectura. Coordine el pago mensual con el
+                  vendedor (+53 54523884) para recibir su clave de activación.
+                </div>
+              )}
+              <button
+                onClick={() => setShowLicenseModal(true)}
+                className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
+              >
+                <KeyRound className="h-4 w-4" />
+                Activar / renovar licencia
+              </button>
+              {user?.license?.isDeveloper && (
+                <Link
+                  to="/dashboard/license"
+                  className="w-full flex items-center justify-center gap-2 rounded-lg border border-border/50 bg-surface-hover/50 px-3 py-2 text-sm font-medium text-text transition-colors hover:border-primary/30 hover:text-primary"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  Gestión avanzada de licencia
+                </Link>
               )}
             </div>
           </div>
@@ -260,16 +344,6 @@ export default function SettingsView() {
                     onChange={e => setFormData(prev => ({...prev, name: e.target.value}))}
                     maxLength={100}
                     className="h-9"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="email" className="text-xs">Email</Label>
-                  <Input 
-                    id="email" 
-                    type="email"
-                    value={user?.email || ''}
-                    disabled
-                    className="h-9 bg-bg/50 text-text-secondary"
                   />
                 </div>
               </div>
@@ -449,7 +523,7 @@ export default function SettingsView() {
                     <div className="flex justify-center">
                       <div id="qr-code" className="bg-white p-2 rounded-lg max-w-full overflow-hidden">
                         <QRCode
-                          value={`${window.location.origin}/menu?b=${user.id}`}
+                          value={menuUrl}
                           size={Math.min(120, window.innerWidth - 100)}
                           level="H"
                         />
@@ -458,7 +532,7 @@ export default function SettingsView() {
                     <div className="flex gap-2">
                       <Input
                         readOnly
-                        value={`${window.location.origin}/menu?b=${user.id}`}
+                        value={menuUrl}
                         className="h-7 text-xs font-mono"
                       />
                       <Button
@@ -467,7 +541,7 @@ export default function SettingsView() {
                         className="h-7 px-2"
                         onClick={() => {
                           if (user?.id) {
-                            navigator.clipboard.writeText(`${window.location.origin}/menu?b=${user.id}`);
+                            navigator.clipboard.writeText(menuUrl);
                             toast.success('Copiado');
                           }
                         }}
@@ -524,18 +598,76 @@ export default function SettingsView() {
           <AccessPinsConfig />
         </div>
 
-        {/* ============================================
-            SECCIÓN 5: SISTEMA
-            Card completo
-            ============================================ */}
+        </div>
 
         {/* ============================================
-            SECCIÓN 6: SINCRONIZACIÓN
+            MODAL: ACTIVAR / RENOVAR LICENCIA
             ============================================ */}
-        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
-          <SyncQueuePanel />
-        </div>
-        </div>
+        {showLicenseModal && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4" onClick={() => !activating && setShowLicenseModal(false)}>
+            <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-4 flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/15">
+                    <KeyRound className="h-6 w-6 text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-text">Activar / renovar licencia</h3>
+                    <p className="text-sm text-text-secondary">Ingrese su clave de activación</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowLicenseModal(false)}
+                  disabled={activating}
+                  className="text-text-secondary hover:text-text transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="mb-4 rounded-lg border border-border/50 bg-bg/40 p-3 text-sm text-text-secondary">
+                <p className="font-medium text-text">Código de negocio</p>
+                <p className="mt-1 text-xl font-bold tracking-widest text-primary">{user?.businessCode || '—'}</p>
+                <p className="mt-1 text-xs">
+                  Coordine el pago mensual de <strong>5,000 CUP</strong> con el vendedor (+53 54523884) y
+                  envíe este código para recibir su clave.
+                </p>
+              </div>
+
+              <label className="mb-1 block text-sm font-medium text-text">Clave de activación</label>
+              <input
+                value={licenseKey}
+                onChange={(e) => setLicenseKey(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleLicenseActivate();
+                  }
+                }}
+                placeholder="XXXXX XXXXX XXXXX XXXXX"
+                autoFocus
+                className="w-full rounded-lg border border-border bg-bg px-3 py-2.5 text-sm text-text outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 placeholder:text-text-secondary/60"
+              />
+
+              <div className="mt-5 flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setShowLicenseModal(false)}
+                  disabled={activating}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary hover:text-text transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleLicenseActivate}
+                  disabled={activating}
+                  className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-primary/90 disabled:opacity-50"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  {activating ? 'Activando...' : 'Activar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       </>
     );

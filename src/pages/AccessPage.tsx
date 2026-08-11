@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Lock, Eye, EyeOff, Store, Loader2 } from 'lucide-react';
+import { Lock, Eye, EyeOff, Store, Loader2, ArrowLeft } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { supabase } from '../lib/supabase';
+import { localDb as supabase } from '../lib/db/localClient';
 import { toast } from 'sonner';
 import InventarioYLogo from '../components/InventarioYLogo';
 
@@ -26,16 +26,16 @@ export default function AccessPage() {
 
   const searchBusiness = async () => {
     try {
-      const { data: profiles, error } = await supabase
-        .from('profiles')
-        .select('name')
+      const { data: profiles, error } = (await supabase
+        .from('user_session')
+        .select('name, businessName')
         .eq('business_code', code.toLowerCase().trim())
-        .limit(1);
+        .limit(1)) as any;
 
       if (error) throw error;
 
       if (profiles && profiles.length > 0) {
-        setFoundBusiness(profiles[0].name);
+        setFoundBusiness(profiles[0].businessName || profiles[0].name || null);
       } else {
         setFoundBusiness(null);
       }
@@ -46,20 +46,18 @@ export default function AccessPage() {
   };
 
   const handleAccess = async () => {
-    if (!code.trim() || pin.length !== 4) {
-      toast.error('Ingresa el código del negocio y un PIN de 4 dígitos');
+    if (!code.trim() || pin.length < 4) {
+      toast.error('Ingrese el código del negocio y un PIN de al menos 4 dígitos');
       return;
     }
 
     setIsLoading(true);
 
     try {
-      // Verify PIN server-side via public RPC (no auth required)
-      // PIN hashes are NEVER downloaded to the browser
-      const { data, error: rpcError } = await supabase.rpc('verify_access_pin_public', {
-        p_business_code: code.toLowerCase().trim(),
+      // Verify PIN via local server RPC (PIN hashes never leave the server)
+      const { data, error: rpcError } = (await supabase.rpc('verify_access_pin', {
         p_pin: pin,
-      });
+      })) as any;
 
       if (rpcError) {
         console.error('Error verifying PIN:', rpcError);
@@ -70,24 +68,15 @@ export default function AccessPage() {
 
       if (!data || !data.success) {
         if (data?.blocked) {
-          toast.error('PIN bloqueado por 3 intentos fallidos. Intente más tarde.');
+          const remaining = Math.max(1, Math.ceil(Number(data.remaining_seconds) || 300));
+          const mins = Math.floor(remaining / 60);
+          const secs = remaining % 60;
+          const duration = remaining >= 60 ? (secs > 0 ? `${mins} min ${secs} s` : `${mins} min`) : `${remaining} s`;
+          toast.error(`PIN bloqueado por 3 intentos fallidos. Intente de nuevo en ${duration}.`);
         } else {
           toast.error(data?.error || 'PIN incorrecto. Verifique su PIN e intente de nuevo.');
         }
         setPin('');
-        setIsLoading(false);
-        return;
-      }
-
-      // Success: store session data
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('business_code', code.toLowerCase().trim())
-        .single();
-
-      if (!profile) {
-        toast.error('Negocio no encontrado');
         setIsLoading(false);
         return;
       }
@@ -99,7 +88,8 @@ export default function AccessPage() {
         accessTime: Date.now()
       }));
 
-      localStorage.setItem('temp_user_id', profile.id);
+      localStorage.setItem('verifiedRole', data.role);
+      localStorage.setItem('verifiedRoleName', data.pin_name || '');
 
       toast.success('¡Acceso exitoso!');
       navigate('/dashboard');
@@ -114,8 +104,20 @@ export default function AccessPage() {
   return (
     <div className="min-h-screen bg-bg flex items-center justify-center p-4">
       <div className="w-full max-w-md">
+        <button
+          onClick={() => navigate('/')}
+          className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-text-secondary hover:text-primary transition-colors"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Volver al inicio
+        </button>
+
         <div className="text-center mb-8">
           <InventarioYLogo size="xl" variant="image" />
+          <h1 className="mt-4 text-2xl font-bold text-text">Acceso de Empleados</h1>
+          <p className="mt-1 text-sm text-text-secondary">
+            Ingrese el código del negocio y su PIN para acceder
+          </p>
         </div>
 
         <div className="bg-surface rounded-2xl border border-border/50 p-6 shadow-2xl">
@@ -132,7 +134,7 @@ export default function AccessPage() {
               type="text"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="Ingresa el código del negocio"
+              placeholder="Ingrese el código del negocio"
               className="h-12"
               disabled={isLoading}
             />
@@ -145,15 +147,15 @@ export default function AccessPage() {
                 type={showPin ? 'text' : 'password'}
                 value={pin}
                 onChange={(e) => {
-                  const value = e.target.value.replace(/\D/g, '').slice(0, 4);
+                  const value = e.target.value.replace(/\D/g, '').slice(0, 24);
                   setPin(value);
                 }}
                 placeholder="0000"
                 className="h-12 text-center text-2xl font-mono tracking-[0.5em] pr-12"
                 disabled={isLoading}
-                maxLength={4}
                 autoComplete="new-password"
                 inputMode="numeric"
+                maxLength={24}
               />
               <button
                 type="button"
@@ -168,7 +170,7 @@ export default function AccessPage() {
 
           <Button
             onClick={handleAccess}
-            disabled={isLoading || !code.trim() || pin.length !== 4}
+            disabled={isLoading || !code.trim() || pin.length < 4}
             className="w-full h-12"
           >
             {isLoading ? (

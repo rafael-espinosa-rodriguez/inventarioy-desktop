@@ -31,58 +31,59 @@ export default function Privacy() {
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">1. Introducción</h2>
             <p>
-              En InventarioY valoramos su privacidad. Esta Política de Privacidad describe cómo recopilamos, usamos, almacenamos y protegemos su información personal cuando utiliza nuestra aplicación.
+              En InventarioY valoramos su privacidad. Esta Política de Privacidad describe cómo manejamos su información cuando utiliza nuestra aplicación de escritorio, que funciona de forma local y sin conexión a internet.
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">2. Datos que Recopilamos</h2>
-            <p>Al registrarse y utilizar InventarioY, recopilamos los siguientes datos:</p>
+            <h2 className="text-lg font-semibold text-text mb-3">2. Datos que Almacenamos</h2>
+            <p>Al configurar y utilizar InventarioY, se almacenan los siguientes datos:</p>
             <ul className="mt-2 space-y-1 list-disc list-inside">
-              <li><strong className="text-text">Datos de cuenta:</strong> nombre, correo electrónico, número de teléfono y nombre del negocio.</li>
-              <li><strong className="text-text">Datos operativos:</strong> productos, inventario, ventas, recetas, movimientos de almacén, cuentas por cobrar y registros de actividad generados por el uso de la aplicación.</li>
-              <li><strong className="text-text">Datos técnicos:</strong> dirección IP, tipo de navegador, sistema operativo y páginas visitadas dentro de la aplicación.</li>
+              <li><strong className="text-text">Datos de negocio:</strong> nombre del negocio, PINs de acceso y datos de contacto que usted registre.</li>
+              <li><strong className="text-text">Datos operativos:</strong> productos, inventario, ventas, recetas, movimientos de almacén, cuentas por cobrar, nómina y registros de actividad generados por el uso de la aplicación.</li>
+              <li><strong className="text-text">Datos de licencia:</strong> fecha de inicio de la prueba, clave de activación y fechas de vencimiento de la licencia.</li>
             </ul>
+            <p className="mt-3">
+              Todos estos datos se almacenan exclusivamente en la base de datos local de su equipo. InventarioY no recopila ni transmite sus datos a servidores externos.
+            </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">3. Finalidad del Tratamiento</h2>
-            <p>Utilizamos sus datos exclusivamente para los siguientes fines:</p>
+            <p>Sus datos se utilizan exclusivamente para los siguientes fines:</p>
             <ul className="mt-2 space-y-1 list-disc list-inside">
-              <li>Proveer y mantener el servicio de gestión empresarial.</li>
-              <li>Gestionar su cuenta y autenticación.</li>
-              <li>Procesar y almacenar la información de su negocio (inventario, ventas, recetas).</li>
-              <li>Mejorar la experiencia de usuario y el funcionamiento de la aplicación.</li>
-              <li>Brindar soporte técnico y atención al cliente.</li>
-              <li>Enviar comunicaciones relacionadas con el servicio (cambios en los términos, vencimiento de suscripción, etc.).</li>
+              <li>Proveer la gestión de su negocio (inventario, ventas, recetas).</li>
+              <li>Validar la autenticación mediante PINs de acceso.</li>
+              <li>Controlar el estado de la licencia y el período de prueba.</li>
+              <li>Brindar soporte técnico y atención al cliente cuando usted lo solicite.</li>
             </ul>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">4. Almacenamiento de los Datos</h2>
             <p>
-              Sus datos se almacenan de forma segura en servidores gestionados a través de Supabase, un proveedor de infraestructura en la nube que utiliza cifrado en tránsito y en reposo. Adicionalmente, ciertos datos operativos pueden almacenarse temporalmente en el almacenamiento local de su navegador para permitir el funcionamiento sin conexión a internet.
+              Sus datos se guardan en una base de datos local (SQLite) dentro de su equipo, en la carpeta de datos de la aplicación. No se transmiten a internet ni se almacenan en la nube.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">5. No Compartimos sus Datos</h2>
             <p>
-              InventarioY no vende, alquila ni comparte sus datos personales con terceros para fines comerciales o publicitarios. Sus datos solo son accesibles por usted y, cuando usted lo autorice explícitamente, por los empleados que usted registre en la aplicación para gestionar su negocio.
+              InventarioY no vende, alquila ni comparte sus datos con terceros para fines comerciales o publicitarios. Sus datos solo son accesibles por usted y, cuando usted lo autorice explícitamente, por los empleados que usted registre en la aplicación para gestionar su negocio.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">6. Seguridad de los Datos</h2>
             <p>
-              Implementamos medidas de seguridad técnicas y organizativas para proteger sus datos contra acceso no autorizado, alteración, divulgación o destrucción. Esto incluye cifrado de contraseñas mediante hashing, autenticación por token JWT y comunicación a través de HTTPS.
+              Sus datos permanecen en su equipo y no salen de él. Le recomendamos proteger su equipo con una contraseña de usuario y realizar copias de seguridad periódicas de la carpeta de datos de la aplicación.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">7. Conservación de los Datos</h2>
             <p>
-              Conservamos sus datos mientras su cuenta esté activa. Al cancelar su suscripción, sus datos operativos se conservan por un período de 90 días para permitir la reactivación de la cuenta, después del cual serán eliminados de forma permanente.
+              Sus datos se conservan en su equipo mientras la aplicación esté instalada. Al desinstalar o eliminar la aplicación, los datos asociados se eliminan de su equipo. Puede realizar una copia de respaldo en cualquier momento si lo desea.
             </p>
           </section>
 
@@ -95,7 +96,7 @@ export default function Privacy() {
               <li>Acceder a sus datos personales almacenados en la aplicación.</li>
               <li>Solicitar la corrección de datos inexactos.</li>
               <li>Solicitar la exportación de sus datos en un formato legible.</li>
-              <li>Solicitar la eliminación de su cuenta y todos los datos asociados.</li>
+              <li>Solicitar la eliminación de su negocio y todos los datos asociados.</li>
             </ul>
             <p className="mt-3">
               Para ejercer cualquiera de estos derechos, contáctenos a través de los canales indicados en la sección de contacto.
@@ -105,21 +106,21 @@ export default function Privacy() {
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">9. Cookies y Almacenamiento Local</h2>
             <p>
-              InventarioY utiliza únicamente cookies técnicas esenciales para el funcionamiento de la aplicación, como el almacenamiento del token de sesión (JWT) en el almacenamiento local de su navegador. No utilizamos cookies de seguimiento, publicitarias ni de terceros.
+              InventarioY no utiliza cookies ni tecnologías de seguimiento. La aplicación utiliza únicamente el almacenamiento local de su equipo para recordar su sesión y preferencias. No hay publicidad ni seguimiento de terceros.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">10. Menores de Edad</h2>
             <p>
-              InventarioY no está dirigido a menores de 18 años. No recopilamos intencionalmente datos de menores. Si tiene conocimiento de que un menor ha proporcionado datos personales, contáctenos para proceder a su eliminación.
+              InventarioY está dirigido a mayores de 18 años (dueños de negocios). No recopilamos intencionalmente datos de menores. Si tiene conocimiento de que un menor ha proporcionado datos personales, contáctenos para proceder a su eliminación.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">11. Cambios en esta Política</h2>
             <p>
-              Podemos actualizar esta Política de Privacidad ocasionalmente. Le notificaremos cualquier cambio significativo a través de la aplicación o por correo electrónico. La fecha de última actualización se indica al inicio de este documento.
+              Podemos actualizar esta Política de Privacidad ocasionalmente. La fecha de última actualización se indica al inicio de este documento.
             </p>
           </section>
 

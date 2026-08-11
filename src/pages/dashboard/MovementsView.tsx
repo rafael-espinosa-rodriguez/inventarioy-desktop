@@ -67,32 +67,41 @@ export default function MovementsView() {
       return isInventoryMovement && matchesSearch && matchesType && matchesDate && matchesWarehouse;
     });
 
-    // Paso 2: Calcular balance sobre los movimientos YA filtrados
-    // Ordenar del más antiguo al más reciente para balance acumulativo
+    // Paso 2: Calcular balance por producto anclando al stock REAL actual del producto
+    // (incluye el efecto de ventas, consumos y gastos, aunque esas filas no se muestren).
     const sorted = [...filtered].sort((a, b) => {
       const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (dateDiff !== 0) return dateDiff;
       return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
     });
 
-    const productBalances: Record<string, number> = {};
+    // Stock actual por producto como fuente de verdad del balance
+    const stockByProduct: Record<string, number> = {};
+    for (const p of products) {
+      stockByProduct[p.id] = Number(p.quantity) || 0;
+    }
 
-    const withBalance = sorted.map(m => {
-      const balanceKey = `${m.product_id}::${m.warehouse_id || '__legacy__'}`;
-      const prevBalance = productBalances[balanceKey] || 0;
-      let currentBalance = prevBalance;
-      
-      if (m.type === 'ENTRADA' || m.type === 'AJUSTE') {
-        currentBalance += m.quantity;
-      } else {
-        currentBalance -= m.quantity;
-      }
-
-      const clampedBalance = Math.max(0, currentBalance);
-      productBalances[balanceKey] = clampedBalance;
-      
-      return { ...m, balance: clampedBalance };
+    // Recorrer TODOS los movimientos cargados del más reciente al más antiguo:
+    // el balance de una fila es el stock justo después de ese movimiento.
+    const allDesc = [...movements].sort((a, b) => {
+      const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
     });
+
+    const runningStock: Record<string, number> = {};
+    const balanceByMovementId: Record<string, number> = {};
+    for (const m of allDesc) {
+      const key = m.product_id;
+      if (!(key in runningStock)) {
+        runningStock[key] = stockByProduct[key] ?? 0;
+      }
+      balanceByMovementId[m.id] = Math.max(0, runningStock[key]);
+      const delta = m.type === 'ENTRADA' || m.type === 'AJUSTE' ? Number(m.quantity) : -Number(m.quantity);
+      runningStock[key] -= delta;
+    }
+
+    const withBalance = sorted.map(m => ({ ...m, balance: balanceByMovementId[m.id] ?? 0 }));
 
     // Paso 3: Revertir para mostrar más reciente primero
     return withBalance.reverse();

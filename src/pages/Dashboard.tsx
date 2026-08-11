@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Link, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
 import { toast } from 'sonner';
 import { 
   LayoutDashboard, 
@@ -22,21 +21,18 @@ import {
   DollarSign,
   FileText,
   LockOpen,
-  Phone,
   Crown,
   AlertTriangle,
-  WifiOff
+  WifiOff,
+  KeyRound
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useDatabaseStore, MODULE_ROLES } from '../store/dbStore';
 import { useIsOnline } from '../hooks/useIsOnline';
 import InventarioYLogo from '../components/InventarioYLogo';
-import SubscriptionBanner from '../components/SubscriptionBanner';
-import SyncStatus from '../components/SyncStatus';
-import OfflineBanner from '../components/OfflineBanner';
+import LicenseBanner from '../components/LicenseBanner';
 import PinModal from '../components/PinModal';
 import ThemeToggle from '../components/ThemeToggle';
-import InstallButton from '../components/InstallButton';
 import Breadcrumbs from '../components/Breadcrumbs';
 const StockView = lazy(() => import('./dashboard/StockView'));
 const InventoryView = lazy(() => import('./dashboard/InventoryView'));
@@ -50,15 +46,13 @@ const ChartsView = lazy(() => import('./dashboard/ChartsView'));
 const ConsumptionView = lazy(() => import('./dashboard/ConsumptionView'));
 const FilteredCenterView = lazy(() => import('./dashboard/FilteredCenterView'));
 const SettingsView = lazy(() => import('./dashboard/SettingsView'));
+const LicenseView = lazy(() => import('./dashboard/LicenseView'));
 const ActionLogsView = lazy(() => import('./dashboard/ActionLogsView'));
-const UsersView = lazy(() => import('./dashboard/UsersView'));
 const DailyClosingsView = lazy(() => import('./dashboard/DailyClosingsView'));
-import PhoneModal from '../components/PhoneModal';
 import { TableSkeleton } from '../components/Skeleton';
 import { syncEngine } from '../lib/syncEngine';
 
 export default function Dashboard() {
-  const [showPhoneModal, setShowPhoneModal] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -114,14 +108,12 @@ export default function Dashboard() {
   ], []);
 
   const navigation = useMemo(() => {
-    let nav = [...baseNav];
-    
-    if (user?.role === 'admin') {
-      nav.push({ name: 'Gestión de Usuarios', href: '/dashboard/users', icon: Users });
-    }
-    
-    return nav;
-  }, [user?.role, user?.email, baseNav]);
+    // Ítem dev (solo visible en la máquina del vendedor, donde hay clave privada).
+    const devItems: (typeof baseNav)[number][] = user?.license?.isDeveloper
+      ? [{ name: 'Licencia', href: '/dashboard/license', icon: KeyRound }]
+      : [];
+    return [...baseNav, ...devItems];
+  }, [baseNav, user?.license?.isDeveloper]);
 
   // Detectar acceso por PIN y cargar datos del negocio
   useEffect(() => {
@@ -254,12 +246,6 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (user && !user.phone) {
-      setShowPhoneModal(true);
-    }
-  }, [user]);
-
-  useEffect(() => {
     const unsub = syncEngine.onEvent((event: string, data: any) => {
       if (event === 'synced') {
         toast.success(`${data.count} cambio${data.count !== 1 ? 's' : ''} sincronizado${data.count !== 1 ? 's' : ''}`);
@@ -281,28 +267,9 @@ export default function Dashboard() {
   }, [fetchAll]);
 
   const checkUncontactedUsers = useCallback(async () => {
-    try {
-      const { count, error } = await supabase
-        .from('profiles')
-        .select('id', { count: 'exact', head: true })
-        .not('phone', 'is', null)
-        .neq('phone', '')
-        .is('last_contacted_at', null);
-
-      if (error || !count || count === 0) return;
-
-      toast(`${count} usuario${count !== 1 ? 's' : ''} pendiente${count !== 1 ? 's' : ''} de contactar`, {
-        icon: '📞',
-        action: {
-          label: 'Ver',
-          onClick: () => navigate('/dashboard/users?filter=uncontacted'),
-        },
-        duration: 10000,
-      });
-    } catch (error) {
-      console.error('Error checking uncontacted users:', error);
-    }
-  }, [navigate]);
+    // Desktop local: no hay usuarios remotos que contactar
+    return;
+  }, []);
 
   useEffect(() => {
     if (user?.role !== 'admin' || hasCheckedUncontacted.current) return;
@@ -352,7 +319,8 @@ export default function Dashboard() {
     }
   };
 
-  const bannerPadding = user?.isSubscriptionActive === false ? 'pt-16' : '';
+  const bannerPadding =
+    user?.license?.status === 'trialing' || user?.license?.status === 'expired' ? 'pt-16' : '';
 
   return (
     <div className={`flex h-screen overflow-hidden bg-bg ${bannerPadding}`}>
@@ -362,8 +330,7 @@ export default function Dashboard() {
       >
         Saltar al contenido
       </a>
-      <SubscriptionBanner />
-      <OfflineBanner />
+      <LicenseBanner />
       {isMobileMenuOpen && (
         <div 
           className="fixed inset-0 z-40 bg-black/50 lg:hidden"
@@ -436,10 +403,10 @@ export default function Dashboard() {
 
           <div className="mt-8 border-t border-border pt-4">
             <div className="mb-4 px-3">
-              <p className="text-sm font-medium text-text">{user?.name}</p>
-              <p className="text-xs text-text-secondary truncate">{user?.email}</p>
+              <p className="text-sm font-medium text-text">{user?.businessName || user?.name}</p>
+              <p className="text-xs text-text-secondary truncate">{user?.role === 'owner' ? 'Dueño/a' : 'Usuario'}</p>
               <div className="mt-2 inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                {user?.subscription?.status === 'trialing' ? 'Prueba Gratis' : 'Plan Profesional'}
+                {user?.license?.status === 'trialing' ? 'Prueba Gratis' : user?.license?.status === 'expired' ? 'Licencia vencida' : 'Plan Profesional'}
               </div>
             </div>
             {verifiedRole && (
@@ -472,14 +439,8 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
-            <div className="mb-3 px-3">
-              <SyncStatus />
-            </div>
             <div className="mb-2">
               <ThemeToggle />
-            </div>
-            <div className="mb-2">
-              <InstallButton />
             </div>
             <button
               onClick={handleLogout}
@@ -496,7 +457,6 @@ export default function Dashboard() {
         <header className="flex h-16 items-center justify-between border-b border-border/50 bg-surface/80 backdrop-blur-xl px-4 lg:hidden">
           <div className="flex items-center gap-2">
             <InventarioYLogo size="lg" variant="image" />
-            <SyncStatus />
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -517,20 +477,6 @@ export default function Dashboard() {
         </header>
 
         <main id="main-content" className="flex-1 overflow-y-auto bg-transparent p-4 md:p-6 lg:p-8">
-          {!user?.phone && (
-            <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Phone className="h-4 w-4 text-amber-500" />
-                <span className="text-sm text-amber-500">Teléfono no registrado</span>
-              </div>
-              <button
-                onClick={() => setShowPhoneModal(true)}
-                className="text-xs px-3 py-1 bg-amber-500 text-bg rounded-md hover:bg-amber-600 transition-colors font-medium"
-              >
-                Agregar
-              </button>
-            </div>
-          )}
           <div className="w-full">
             <Breadcrumbs />
             <Suspense fallback={<div className="p-6"><TableSkeleton rows={8} cols={6} /></div>}>
@@ -548,10 +494,8 @@ export default function Dashboard() {
                 <Route path="/charts" element={<ChartsView />} />
                 <Route path="/filtered" element={<FilteredCenterView />} />
                 <Route path="/settings" element={<SettingsView />} />
+                <Route path="/license" element={<LicenseView />} />
                 <Route path="/action-logs" element={<ActionLogsView />} />
-                    {user?.role === 'admin' && (
-                  <Route path="/users" element={<UsersView />} />
-                )}
               </Routes>
             </Suspense>
           </div>
@@ -593,11 +537,6 @@ export default function Dashboard() {
             </div>
           </div>
         )}
-
-        <PhoneModal
-          isOpen={showPhoneModal}
-          onClose={() => setShowPhoneModal(false)}
-        />
 
         {showLogoutConfirm && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">

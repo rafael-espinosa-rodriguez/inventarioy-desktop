@@ -31,56 +31,56 @@ export default function Terms() {
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">1. Aceptación de los Términos</h2>
             <p>
-              Al registrarse y utilizar InventarioY, usted acepta estos Términos y Condiciones en su totalidad. Si no está de acuerdo con alguna parte de estos términos, no debe utilizar la aplicación.
+              Al instalar, configurar y utilizar InventarioY, usted acepta estos Términos y Condiciones en su totalidad. Si no está de acuerdo con alguna parte de estos términos, no debe utilizar la aplicación.
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">2. Descripción del Servicio</h2>
+            <h2 className="text-lg font-semibold text-text mb-3">2. Descripción del Producto</h2>
             <p>
-              InventarioY es una aplicación de gestión empresarial que permite administrar inventarios, registrar ventas, gestionar recetas, controlar cuentas por cobrar y generar reportes. El servicio se ofrece exclusivamente a través de la aplicación web.
+              InventarioY es una aplicación de escritorio de gestión empresarial que permite administrar inventarios, registrar ventas, gestionar recetas, controlar cuentas por cobrar y generar reportes. Todos sus datos se almacenan de forma local en su equipo y la aplicación funciona sin conexión a internet.
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">3. Registro de Cuenta</h2>
+            <h2 className="text-lg font-semibold text-text mb-3">3. Configuración del Negocio y PIN</h2>
             <p>
-              Para utilizar InventarioY, debe crear una cuenta proporcionando información veraz y completa, incluyendo nombre, correo electrónico, número de teléfono y nombre del negocio. Usted es responsable de mantener la confidencialidad de su contraseña y de todas las actividades que ocurran bajo su cuenta.
+              Al configurar InventarioY, usted registra el nombre de su negocio y crea un PIN de acceso. Todos los datos quedan guardados localmente en su equipo. Usted es responsable de mantener la confidencialidad de sus PINs y de todas las actividades que ocurran bajo su cuenta.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">4. Período de Prueba Gratis</h2>
             <p>
-              Al registrarse, se le otorgan 7 (siete) días de prueba gratuita con acceso completo a todas las funcionalidades de la aplicación. Al finalizar el período de prueba, deberá contratar el Plan Profesional para continuar utilizando el servicio.
+              Al configurar la aplicación, se le otorgan 7 (siete) días de prueba gratuita con acceso completo a todas las funcionalidades. Al finalizar el período de prueba, deberá activar el Plan Profesional para continuar utilizando el servicio.
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">5. Plan Profesional y Pagos</h2>
+            <h2 className="text-lg font-semibold text-text mb-3">5. Plan Profesional, Pago y Activación</h2>
             <p>
-              El Plan Profesional tiene un costo mensual y se renueva automáticamente cada mes. Los pagos se coordinan directamente a través de los canales de contacto indicados en la aplicación. InventarioY se reserva el derecho de modificar los precios con previo aviso.
+              El Plan Profesional tiene un costo de 5,000 CUP al mes por negocio. La adquisición se realiza de forma manual: contacte a nuestro equipo, realice el pago (efectivo o transferencia) y reciba una clave de activación. La clave se introduce en la aplicación y activa la licencia por el período contratado (1, 3, 6 o 12 meses, con descuento en planes de mayor duración). La renovación es igualmente manual al vencer la licencia. InventarioY se reserva el derecho de modificar los precios con previo aviso.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">6. Uso Permitido</h2>
             <p>
-              Usted se compromete a utilizar InventarioY únicamente para fines lícitos y de acuerdo con estos términos. Está prohibido: usar la aplicación para actividades ilegales, intentar acceder sin autorización a cuentas ajenas, realizar ingeniería inversa sobre el software, o cualquier uso que pueda dañar, sobrecargar o deteriorar el servicio.
+              Usted se compromete a utilizar InventarioY únicamente para fines lícitos y de acuerdo con estos términos. Está prohibido: usar la aplicación para actividades ilegales, intentar acceder sin autorización a los PINs ajenos, realizar ingeniería inversa sobre el software, o cualquier uso que pueda dañar o deteriorar el producto. La manipulación de la fecha del sistema para evadir el control de la licencia está expresamente prohibida y puede derivar en la suspensión del acceso.
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">7. Disponibilidad del Servicio</h2>
+            <h2 className="text-lg font-semibold text-text mb-3">7. Almacenamiento y Respaldo de Datos</h2>
             <p>
-              InventarioY se esfuerza por mantener el servicio disponible de forma continua. Sin embargo, no garantiza disponibilidad ininterrumpida y no se hace responsable por interrupciones causadas por mantenimiento, fallos técnicos, problemas de conectividad a internet o eventos fuera de su control.
+              Los datos de su negocio se almacenan exclusivamente en la base de datos local de su equipo. Le recomendamos realizar copias de seguridad periódicas. InventarioY no se hace responsable por la pérdida de datos causada por fallos del equipo, borrado accidental o falta de respaldo.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">8. Limitación de Responsabilidad</h2>
             <p>
-              En la máxima medida permitida por la ley aplicable, InventarioY no será responsable por daños directos, indirectos, incidentales o consecuentes que resulten del uso o la imposibilidad de usar el servicio, incluyendo pérdida de datos, pérdida de ingresos o interrupción del negocio.
+              En la máxima medida permitida por la ley aplicable, InventarioY no será responsable por daños directos, indirectos, incidentales o consecuentes que resulten del uso o la imposibilidad de usar la aplicación, incluyendo pérdida de datos, pérdida de ingresos o interrupción del negocio.
             </p>
           </section>
 
@@ -93,16 +93,16 @@ export default function Terms() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text mb-3">10. Cancelación</h2>
+            <h2 className="text-lg font-semibold text-text mb-3">10. Vencimiento y Suspensión de la Licencia</h2>
             <p>
-              Usted puede cancelar su suscripción en cualquier momento contactando a nuestro equipo de soporte. La cancelación será efectiva al finalizar el período de facturación actual. No se realizan reembolsos por períodos parciales.
+              Cuando la licencia vence, la aplicación pasa a un modo de solo lectura: puede consultar sus datos pero no registrar nuevas operaciones hasta activar una nueva clave de licencia. No se realizan reembolsos por períodos parciales.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text mb-3">11. Modificaciones de los Términos</h2>
             <p>
-              InventarioY se reserva el derecho de modificar estos términos en cualquier momento. Las modificaciones entrarán en vigor al ser publicadas en la aplicación. El uso continuado del servicio después de dichas modificaciones constituye la aceptación de los nuevos términos.
+              InventarioY se reserva el derecho de modificar estos términos en cualquier momento. Las modificaciones entrarán en vigor al ser publicadas en la aplicación. El uso continuado del producto después de dichas modificaciones constituye la aceptación de los nuevos términos.
             </p>
           </section>
 

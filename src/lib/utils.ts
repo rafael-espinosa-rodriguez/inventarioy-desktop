@@ -114,4 +114,9 @@ export function normalizeStr(str: string): string {
   return str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 
+export function esVitalicia(validUntil?: string | null): boolean {
+  if (!validUntil) return false;
+  return new Date(validUntil).getUTCFullYear() >= 2900;
+}
+
 export const exportToExcel = exportToCSV;

@@ -50,7 +50,8 @@ export default function PinModal({ isOpen, moduleName, onSuccess, onCancel, isIn
   if (!isOpen) return null;
 
   const handleVerify = async () => {
-    if (pin.length !== 4) {
+    if (pin.length < 4) {
+      setError('El PIN debe tener al menos 4 dígitos');
       return;
     }
 
@@ -68,7 +69,7 @@ export default function PinModal({ isOpen, moduleName, onSuccess, onCancel, isIn
     } else if (result.blocked) {
       setBlocked(true);
       setRemainingTime(result.remainingTime || 300);
-      setError('PIN bloqueado. Intente más tarde.');
+      setError(result.error || 'PIN bloqueado. Intente más tarde.');
     } else {
       setError(result.error || 'PIN incorrecto');
       setPin('');
@@ -77,13 +78,9 @@ export default function PinModal({ isOpen, moduleName, onSuccess, onCancel, isIn
   };
 
   const handleNumberClick = (num: string) => {
-    if (pin.length < 4) {
+    if (pin.length < 24) {
       setError('');
-      const newPin = pin + num;
-      setPin(newPin);
-      if (newPin.length === 4) {
-        setTimeout(handleVerify, 300);
-      }
+      setPin(pin + num);
     }
   };
 
@@ -127,22 +124,19 @@ export default function PinModal({ isOpen, moduleName, onSuccess, onCancel, isIn
               name="pin-field-no-autofill"
               value={pin}
               onChange={(e) => {
-                const value = e.target.value.replace(/\D/g, '').slice(0, 4);
+                const value = e.target.value.replace(/\D/g, '').slice(0, 24);
                 setPin(value);
                 setError('');
-                if (value.length === 4) {
-                  setTimeout(handleVerify, 300);
-                }
               }}
               placeholder="0000"
-              aria-label="Ingrese su PIN de 4 dígitos"
+              aria-label="Ingrese su PIN de al menos 4 dígitos"
               className="h-12 text-center text-2xl font-mono tracking-[0.5em] pr-12"
               style={{
                 WebkitTextSecurity: showPin ? 'none' : 'disc',
                 MozAppearance: 'textfield'
               } as React.CSSProperties}
               disabled={blocked || isVerifying}
-              maxLength={4}
+              maxLength={24}
               autoComplete="new-password"
               inputMode="numeric"
               id="pin-input-field"
@@ -205,7 +199,7 @@ export default function PinModal({ isOpen, moduleName, onSuccess, onCancel, isIn
           <Button
             className="flex-1"
             onClick={handleVerify}
-            disabled={blocked || pin.length !== 4}
+            disabled={blocked || pin.length < 4}
           >
             {isInitialVerification ? 'Identificarse' : 'Verificar'}
           </Button>

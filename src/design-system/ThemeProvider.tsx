@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/authStore';
 
 type Theme = 'light' | 'dark';
@@ -33,17 +32,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('theme-preference', theme);
   }, [theme, mounted]);
 
-  useEffect(() => {
-    if (!user) return;
-    supabase.from('profiles').update({ theme_preference: theme }).eq('id', user.id);
-  }, [theme]);
-
   const setTheme = (newTheme: Theme) => {
     setThemeState(newTheme);
     localStorage.setItem('theme-preference', newTheme);
-    if (user) {
-      supabase.from('profiles').update({ theme_preference: newTheme }).eq('id', user.id);
-    }
   };
 
   if (!mounted) return <>{children}</>;

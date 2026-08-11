@@ -15,8 +15,6 @@ const Register = lazy(() => import('./pages/Register'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const MenuView = lazy(() => import('./pages/MenuView'));
 const AccessPage = lazy(() => import('./pages/AccessPage'));
-const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
-const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const Terms = lazy(() => import('./pages/Terms'));
 const Privacy = lazy(() => import('./pages/Privacy'));
 
@@ -88,8 +86,6 @@ export default function App() {
           <Route path="/menu" element={<MenuView />} />
           <Route path="/acceso" element={<AccessPage />} />
           <Route path="/acceso/:businessCode" element={<AccessPage />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/dashboard/*" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />

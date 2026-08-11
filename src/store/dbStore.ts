@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase } from '../lib/supabase';
+import { localDb as supabase } from '../lib/db/localClient';
 import { useAuthStore } from './authStore';
 import { toast } from 'sonner';
 import { db, cacheAllData, getCachedProducts, getCachedMovements, getCachedWarehouses, getCachedTransitItems, getCachedSales, getCachedRecipes, getCachedEmployees, getCachedCategories, getCachedPendingAccounts, getCachedDailyClosings, getCachedAccessPins, getCachedProductWarehouse, getSyncQueueCount, addToSyncQueue, cacheAccessPins } from '../lib/dexieDb';
@@ -9,6 +9,10 @@ import { calcularNomina } from '../utils/payrollCalculations';
 import { logger } from '../lib/logger';
 import { normalizeStr } from '../lib/utils';
 import { trackLocalCreation, untrackLocalCreation } from '../lib/realtimeGuard';
+
+// Versión desktop: los datos viven en el servidor local embebido (Electron).
+// Forzamos "online" para que todas las operaciones usen la ruta al shim local.
+const IS_ONLINE = true;
 
 let _isFetchingAll = false;
 let _isConsumingTransit = false;
@@ -340,6 +344,16 @@ export interface PayrollEntry {
 const capitalize = (str: string) =>
   str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 
+const formatBlockRemaining = (seconds: number): string => {
+  const s = Math.max(1, Math.ceil(seconds));
+  if (s >= 60) {
+    const mins = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem > 0 ? `${mins} min ${rem} s` : `${mins} min`;
+  }
+  return `${s} s`;
+};
+
 const DEFAULT_TIMEOUT = 15000; // 15 segundos
 
 const isRateLimitError = (err: any): boolean => {
@@ -382,7 +396,7 @@ function isNetworkError(err: any): boolean {
   const msg = err?.message || '';
   if (NETWORK_ERROR_MESSAGES.some((m) => msg.includes(m))) return true;
   if (err?.status === 503) return true;
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
+  if (typeof navigator !== 'undefined' && !IS_ONLINE) return true;
   return false;
 }
 
@@ -659,7 +673,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     set({ isLoading: true });
 
     // Offline sin internet: restaurar desde caché Dexie sin tocar Supabase
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       logger.info('📥 Offline — restaurando desde caché local...');
       await restoreFromCache(user.id);
       set({ isLoading: false });
@@ -667,7 +681,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       return;
     }
 
-    // Verificar que realmente haya conectividad (navigator.onLine a veces miente)
+    // Verificar que realmente haya conectividad (IS_ONLINE a veces miente)
     const hasRealNet = await (async () => {
       try {
         const result = await Promise.race([
@@ -681,7 +695,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     })();
 
     if (!hasRealNet) {
-      logger.info('📥 navigator.onLine=true pero sin internet real — restaurando caché...');
+      logger.info('📥 IS_ONLINE=true pero sin internet real — restaurando caché...');
       await restoreFromCache(user.id);
       set({ isLoading: false });
       _isFetchingAll = false;
@@ -702,7 +716,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       ]);
       productsData = productsRes.data || [];
       movementsData = movementsRes.data || [];
-      set({ products: productsData, movements: movementsData });
+      set({ products: productsData ?? [], movements: movementsData ?? [] });
       await delay(100);
     } catch (e) {
       logger.error('❌ Grupo 1 (productos/movimientos) falló:', e);
@@ -720,7 +734,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       ]);
       salesData = salesRes.data?.map((s: any) => ({ ...s, items: s.sale_items || [] })) || [];
       recipesData = recipesRes.data?.map((r: any) => ({ ...r, ingredients: r.recipe_ingredients || [] })) || [];
-      set({ sales: salesData, recipes: recipesData });
+      set({ sales: salesData ?? [], recipes: recipesData ?? [] });
       await delay(100);
     } catch (e) {
       logger.error('❌ Grupo 2 (ventas/recetas) falló:', e);
@@ -744,7 +758,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       categoriesData = categoriesRes.data || [];
       hrDocsData = hrDocsRes.data || [];
       departmentsData = departmentsRes.data || [];
-      set({ employees: employeesData, categories: categoriesData, hrDocuments: hrDocsData, departments: departmentsData });
+      set({ employees: employeesData ?? [], categories: categoriesData ?? [], hrDocuments: hrDocsData ?? [], departments: departmentsData ?? [] });
       await delay(100);
     } catch (e) {
       logger.error('❌ Grupo 3 (empleados/RRHH) falló:', e);
@@ -1021,7 +1035,7 @@ addProduct: async (product) => {
       }
     };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       await saveProductOffline();
       return;
     }
@@ -1084,8 +1098,8 @@ addProduct: async (product) => {
         );
       }
 
-      await get().fetchProductWarehouse();
       await get().fetchAll();
+      await get().fetchProductWarehouse();
 
       toast.success('Producto guardado exitosamente');
     } catch (error: any) {
@@ -1117,7 +1131,7 @@ addProduct: async (product) => {
       updated_at: new Date().toISOString(),
     };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         products: state.products.map(p => p.id === id ? { ...p, ...updates, updated_at: new Date().toISOString() } : p),
       }));
@@ -1151,7 +1165,7 @@ addProduct: async (product) => {
   },
 
   deleteProduct: async (id) => {
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         products: state.products.map(p => p.id === id ? { ...p, is_active: false } : p),
       }));
@@ -1317,7 +1331,7 @@ addProduct: async (product) => {
       } catch {}
     };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       await saveOffline();
       return;
     }
@@ -1544,7 +1558,7 @@ addProduct: async (product) => {
   }),
 
   justifyMovement: async (id, justification) => {
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         movements: state.movements.map(m =>
           m.id === id ? { ...m, status: 'JUSTIFICADO', justification, justification_date: new Date().toISOString() } : m
@@ -1674,7 +1688,7 @@ addProduct: async (product) => {
     for (const warehouse of warehouses) {
       for (const product of products) {
         const existingPw = data.find(
-          pw => pw.product_id === product.id && pw.warehouse_id === warehouse.id
+          (pw: any) => pw.product_id === product.id && pw.warehouse_id === warehouse.id
         );
         const expectedQty = (warehouse.id === mainWarehouse?.id) ? Number(product.quantity) || 0 : 0;
         
@@ -1772,7 +1786,7 @@ addProduct: async (product) => {
       }
     }
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const tempId = crypto.randomUUID();
       const tempSale = {
         id: tempId,
@@ -1940,7 +1954,7 @@ addProduct: async (product) => {
 
     const updatedItems: { id: string; newRemaining: number; newConsumed: number; toConsume: number }[] = [];
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       let remainingLocal = qtyNeeded;
       const consumptionItems: { transitItemId: string; quantity: number }[] = [];
       for (const item of transitItemsForProduct) {
@@ -2110,7 +2124,7 @@ addProduct: async (product) => {
     const newInTransit = Math.max(0, Number(product.in_transit || 0) - quantity);
     const newQuantity = Number(product.quantity) + quantity;
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const localMovement: Movement = {
         id: crypto.randomUUID(),
         user_id: user.id,
@@ -2253,7 +2267,7 @@ addProduct: async (product) => {
     const newRemaining = transitItem.remaining - quantity;
     const newInTransitVal = Math.max(0, Number(product.in_transit || 0) - quantity);
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         transitItems: state.transitItems.map(t => t.id === transitItemId ? { ...t, remaining: newRemaining } : t).filter(t => t.remaining > 0),
         products: state.products.map(p => p.id === product.id ? { ...p, in_transit: newInTransitVal } : p),
@@ -2351,7 +2365,7 @@ addProduct: async (product) => {
     const newConsumed = (transitItem.consumed || 0) + quantity;
     const newInTransit = Math.max(0, Number(product.in_transit || 0) - quantity);
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         transitItems: state.transitItems.map(t => t.id === transitItemId ? { ...t, remaining: newRemaining, consumed: newConsumed } : t).filter(t => t.remaining > 0),
         products: state.products.map(p => p.id === product.id ? { ...p, in_transit: newInTransit } : p),
@@ -2445,7 +2459,7 @@ addProduct: async (product) => {
   getPendingAccounts: async () => {
     const user = useAuthStore.getState().user;
     if (!user) return;
-    if (!navigator.onLine) return;
+    if (!IS_ONLINE) return;
 
     const { data, error } = await supabase
       .from('pending_accounts')
@@ -2463,7 +2477,7 @@ addProduct: async (product) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const id = crypto.randomUUID();
       const offlineAccount: PendingAccount = {
         id, user_id: user.id, client_name: clientName,
@@ -2572,7 +2586,7 @@ addProduct: async (product) => {
     const allItems = [...account.items, ...newItems];
     const newTotal = allItems.reduce((sum, item) => sum + item.subtotal, 0);
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         pendingAccounts: state.pendingAccounts.map(a =>
           a.id === accountId
@@ -2610,7 +2624,7 @@ addProduct: async (product) => {
   },
 
   updatePendingAccount: async (accountId: string, updates: Partial<PendingAccount>) => {
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         pendingAccounts: state.pendingAccounts.map(a =>
           a.id === accountId ? { ...a, ...updates, updated_at: new Date().toISOString() } : a
@@ -2645,7 +2659,7 @@ addProduct: async (product) => {
     const isAccountHouse = account.is_account_house || false;
     const newTotal = isAccountHouse ? 0 : items.reduce((sum, item) => sum + item.subtotal, 0);
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         pendingAccounts: state.pendingAccounts.map(a =>
           a.id === accountId
@@ -2690,7 +2704,7 @@ addProduct: async (product) => {
     const accountItems = account.items || [];
     const newTotal = newIsAccountHouse ? 0 : accountItems.reduce((sum, item) => sum + item.subtotal, 0);
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         pendingAccounts: state.pendingAccounts.map(a =>
           a.id === accountId
@@ -2727,7 +2741,7 @@ deletePendingAccount: async (accountId: string) => {
     const account = get().pendingAccounts.find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Cuenta no encontrada' };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const transitRestores: { transitItemId: string; quantity: number }[] = [];
       const accountItems = account.items || [];
 
@@ -2807,7 +2821,7 @@ deletePendingAccount: async (accountId: string) => {
     await get().getPendingAccounts();
     const { data: transitData } = await supabase.from('transit_items').select('*').eq('user_id', useAuthStore.getState().user?.id);
     if (transitData) {
-      set({ transitItems: transitData.filter(t => t.remaining > 0) });
+      set({ transitItems: transitData.filter((t: any) => t.remaining > 0) });
     }
     return { success: true };
   },
@@ -2828,7 +2842,7 @@ deletePendingAccount: async (accountId: string) => {
       return { success: false, error: 'El día está cerrado, no se puede cobrar' };
     }
     
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const saleItems = account.items.map(item => ({
         product_id: item.product_id,
         quantity: item.quantity,
@@ -3018,7 +3032,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!anyPin) return { success: false, error: 'No hay pines activos configurados' };
 
     // Online: verify server-side via RPC (secure)
-    if (navigator.onLine) {
+    if (IS_ONLINE) {
       try {
         const { data, error: rpcError } = await supabase.rpc('verify_access_pin', {
           p_pin: pin,
@@ -3054,14 +3068,14 @@ deletePendingAccount: async (accountId: string) => {
       const existingPin = matchingPins[0];
       if (!existingPin) return { success: false, error: 'Tu PIN no tiene acceso a este módulo' };
       
-      if (navigator.onLine) {
+      if (IS_ONLINE) {
         await supabase.from('access_pins').update({ failed_attempts: existingPin.failed_attempts + 1 }).eq('id', existingPin.id);
       } else {
         const newAttempts = existingPin.failed_attempts + 1;
         const blockedUntil = newAttempts >= 3 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
         await addToSyncQueue({ operation: 'updateAccessPinAttempts', table: 'access_pins', payload: { pinId: existingPin.id, failed_attempts: newAttempts, blocked_until: blockedUntil } });
         if (blockedUntil) {
-          return { success: false, error: 'PIN bloqueado por 3 intentos fallidos', blocked: true, remainingTime: 300 };
+          return { success: false, error: 'PIN bloqueado por 3 intentos fallidos. Intente de nuevo en 5 min.', blocked: true, remainingTime: 300 };
         }
       }
       return { success: false, error: 'PIN incorrecto' };
@@ -3071,7 +3085,7 @@ deletePendingAccount: async (accountId: string) => {
       const blockedUntil = new Date(userPin.blocked_until);
       const now = new Date();
       if (blockedUntil > now) {
-        return { success: false, error: 'PIN bloqueado', blocked: true, remainingTime: Math.ceil((blockedUntil.getTime() - now.getTime()) / 1000) };
+        return { success: false, error: `PIN bloqueado. Intente de nuevo en ${formatBlockRemaining(Math.ceil((blockedUntil.getTime() - now.getTime()) / 1000))}.`, blocked: true, remainingTime: Math.ceil((blockedUntil.getTime() - now.getTime()) / 1000) };
       }
     }
 
@@ -3086,7 +3100,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
 
     // Online: verify server-side via RPC (secure)
-    if (navigator.onLine) {
+    if (IS_ONLINE) {
       try {
         const { data, error: rpcError } = await supabase.rpc('verify_access_pin', {
           p_pin: pin,
@@ -3120,12 +3134,12 @@ deletePendingAccount: async (accountId: string) => {
     if (!userPin) {
       const anyPin = get().accessPins.find(p => p.is_active);
       if (!anyPin) return { success: false, error: 'No hay pines activos configurados' };
-      if (!navigator.onLine) {
+      if (!IS_ONLINE) {
         const newAttempts = anyPin.failed_attempts + 1;
         const blockedUntil = newAttempts >= 3 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
         await addToSyncQueue({ operation: 'updateAccessPinAttempts', table: 'access_pins', payload: { pinId: anyPin.id, failed_attempts: newAttempts, blocked_until: blockedUntil } });
         if (blockedUntil) {
-          return { success: false, error: 'PIN bloqueado por 3 intentos fallidos', blocked: true, remainingTime: 300 };
+          return { success: false, error: 'PIN bloqueado por 3 intentos fallidos. Intente de nuevo en 5 min.', blocked: true, remainingTime: 300 };
         }
       }
       return { success: false, error: 'PIN incorrecto' };
@@ -3134,7 +3148,7 @@ deletePendingAccount: async (accountId: string) => {
     if (userPin.blocked_until) {
       const blockedUntil = new Date(userPin.blocked_until);
       if (blockedUntil > new Date()) {
-        return { success: false, error: 'PIN bloqueado', blocked: true, remainingTime: Math.ceil((blockedUntil.getTime() - Date.now()) / 1000) };
+        return { success: false, error: `PIN bloqueado. Intente de nuevo en ${formatBlockRemaining(Math.ceil((blockedUntil.getTime() - Date.now()) / 1000))}.`, blocked: true, remainingTime: Math.ceil((blockedUntil.getTime() - Date.now()) / 1000) };
       }
     }
 
@@ -3154,7 +3168,7 @@ deletePendingAccount: async (accountId: string) => {
     const role = verifiedRole || activePin?.role || user.role || 'owner';
     const roleLabel = verifiedRole ? `${ROLE_LABELS[verifiedRole]}${verifiedRoleName ? `: ${verifiedRoleName}` : ''}` : (activePin ? `${ROLE_LABELS[activePin.role]}${activePin.pin_name ? `: ${activePin.pin_name}` : ''}` : (user.name || 'Dueño/a'));
     
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       await addToSyncQueue({ operation: 'logAction', table: 'action_logs', payload: { module, action, details, role, roleLabel } });
       get().refreshSyncQueueCount();
       return;
@@ -3177,7 +3191,7 @@ deletePendingAccount: async (accountId: string) => {
 
     // Si está offline, no intentar cargar desde Supabase para evitar crash
     // Mantener los datos existentes en memoria
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       logger.info('[getActionLogs] Offline: manteniendo datos existentes');
       return;
     }
@@ -3201,7 +3215,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) throw new Error('No hay usuario autenticado');
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const recipeId = crypto.randomUUID();
       const now = new Date().toISOString();
       const offlineRecipe = {
@@ -3280,7 +3294,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   updateRecipe: async (id, updates) => {
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       set((state) => ({
         recipes: state.recipes.map(r => r.id === id ? { ...r, ...updates } : r),
       }));
@@ -3332,7 +3346,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteRecipe: async (id) => {
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const recipeToDelete = get().recipes.find(r => r.id === id);
       set((state) => ({ recipes: state.recipes.filter(r => r.id !== id) }));
       await addToSyncQueue({ operation: 'deleteRecipe', table: 'recipes', payload: { id, name: recipeToDelete?.name || 'Receta' } });
@@ -3360,7 +3374,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) throw new Error('No hay usuario autenticado');
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const tempId = crypto.randomUUID();
       const tempEmployee = {
         ...employee,
@@ -3666,7 +3680,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) return 0;
 
     // Si está offline, retornar 0 para evitar crash
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       logger.info('[getEmployeesCount] Offline: returning 0');
       return 0;
     }
@@ -3736,7 +3750,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) return 0;
 
     // Si está offline, retornar 0 para evitar crash
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       logger.info('[getDepartmentsCount] Offline: returning 0');
       return 0;
     }
@@ -3801,7 +3815,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) return 0;
 
     // Si está offline, retornar 0 para evitar crash
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       logger.info('[getPayrollEntriesCount] Offline: returning 0');
       return 0;
     }
@@ -3944,7 +3958,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       try {
         const cached = await getCachedDailyClosings(user.id);
         if (cached && cached.length > 0) {
@@ -3976,7 +3990,7 @@ deletePendingAccount: async (accountId: string) => {
       return { success: false, error: 'Ya existe un cierre para esta fecha' };
     }
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       const id = crypto.randomUUID();
       const offlineClosing = { ...closing, id, user_id: user.id, created_at: new Date().toISOString(), sales_count: closing.sales_count || 0 } as DailyClosing;
       set((state) => ({ dailyClosings: [offlineClosing, ...state.dailyClosings] }));
@@ -4030,8 +4044,8 @@ deletePendingAccount: async (accountId: string) => {
     for (const product of products) {
       let calculatedQty = 0;
       movements
-        .filter(m => m.product_id === product.id)
-        .forEach(m => {
+        .filter((m: any) => m.product_id === product.id)
+        .forEach((m: any) => {
           if (m.type === 'ENTRADA') {
             calculatedQty += Number(m.quantity);
           } else {
@@ -4052,7 +4066,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No autenticado' };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       return { success: false, error: 'No hay conexión — los documentos se pueden subir solo cuando hay internet' };
     }
 
@@ -4133,7 +4147,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No autenticado' };
 
-    if (!navigator.onLine) {
+    if (!IS_ONLINE) {
       return { success: false, error: 'No hay conexión — los documentos se pueden subir solo cuando hay internet' };
     }
 
@@ -4693,7 +4707,7 @@ async function restoreFromCache(userId: string) {
   // Solo ejecutar replay del sync queue si hay conexión.
   // Offline los datos de Dexie ya están en su estado final; el replay
   // causaría doble consumo de transitItems y parpadeo a 0 en la UI.
-  if (navigator.onLine) {
+  if (IS_ONLINE) {
     await replayPendingSyncQueue(useDatabaseStore.setState, useDatabaseStore.getState);
 
     const postReplayTransit = useDatabaseStore.getState().transitItems;

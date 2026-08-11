@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { localDb as supabase } from '../lib/db/localClient';
 import { Search, X, ShoppingBag, AlertCircle, Loader2, MapPin, Clock, Phone } from 'lucide-react';
 import { Input } from '../components/ui/input';
 
@@ -13,6 +13,8 @@ interface MenuItem {
   is_recipe: boolean;
   stock?: number;
 }
+
+const isActive = (v: any) => v === true || v === 1;
 
 export default function MenuView() {
   const [searchParams] = useSearchParams();
@@ -42,21 +44,21 @@ export default function MenuView() {
         setLoading(true);
         setError(null);
         
-        const [productsRes, recipesRes, categoriesRes, profileRes] = await Promise.all([
-          supabase.from('products').select('id, name, price, category, quantity, is_individual, is_active').eq('user_id', businessId).eq('is_active', true),
-          supabase.from('recipes').select('id, name, selling_price, category, is_active').eq('user_id', businessId).eq('is_active', true),
-          supabase.from('categories').select('id, name, user_id').eq('user_id', businessId).order('name'),
-          supabase.from('profiles').select('business_name, phone, address, business_hours').eq('id', businessId).single()
-        ]);
-
-        if (productsRes.data) setProducts(productsRes.data);
-        if (recipesRes.data) setRecipes(recipesRes.data);
-        if (categoriesRes.data) setCategories(categoriesRes.data);
-        if (profileRes.data?.business_name) setBusinessName(profileRes.data.business_name);
-        if (profileRes.data?.phone) setPhone(profileRes.data.phone);
-        if (profileRes.data?.address) setAddress(profileRes.data.address);
-        if (profileRes.data?.business_hours) setBusinessHours(profileRes.data.business_hours);
-        if (!profileRes.data) {
+        const menuRes = await supabase.fetchMenu(businessId);
+        if (menuRes.error) {
+          setError(menuRes.error?.message || 'Error al cargar el menú.');
+          return;
+        }
+        const data = menuRes.data || {};
+        setProducts(data.products || []);
+        setRecipes(data.recipes || []);
+        setCategories(data.categories || []);
+        const profile = data.profile || null;
+        if (profile?.businessName || profile?.business_name) setBusinessName(profile.businessName || profile.business_name);
+        if (profile?.phone) setPhone(profile.phone);
+        if (profile?.address) setAddress(profile.address);
+        if (profile?.businessHours || profile?.business_hours) setBusinessHours(profile.businessHours || profile.business_hours);
+        if (!profile) {
           setError('Negocio no encontrado.');
         }
 
@@ -75,7 +77,7 @@ export default function MenuView() {
     const items: MenuItem[] = [];
     
     products
-      .filter(p => p.is_active === true && p.is_individual === true)
+      .filter(p => isActive(p.is_active) && p.is_individual === true)
       .forEach(product => {
         items.push({
           id: product.id,
@@ -89,7 +91,7 @@ export default function MenuView() {
       });
 
     recipes
-      .filter(r => r.is_active === true)
+      .filter(r => isActive(r.is_active))
       .forEach(recipe => {
         items.push({
           id: recipe.id,

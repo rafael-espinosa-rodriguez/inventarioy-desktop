@@ -4,15 +4,13 @@ import { Button } from '../components/ui/button';
 import { useAuthStore } from '../store/authStore';
 import { toast } from 'sonner';
 import InventarioYLogo from '../components/InventarioYLogo';
-import { Loader2, MessageCircle, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [subscriptionExpired, setSubscriptionExpired] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
+  const [showPin, setShowPin] = useState(false);
   const navigate = useNavigate();
   const { login, user, isAuthenticated, isLoading: authLoading } = useAuthStore();
 
@@ -37,27 +35,17 @@ export default function Login() {
     setIsLoading(true);
 
     try {
-      if (password.length < 6) {
-        setError('La contraseña debe tener al menos 6 caracteres');
+      if (!pin || pin.length < 4) {
+        setError('El PIN debe tener al menos 4 dígitos');
         setIsLoading(false);
         return;
       }
 
-      const result = await login(email, password);
+      const result = await login(pin.trim());
       
       if (!result.success) {
         setIsLoading(false);
         setError(String(result.error || 'Error al iniciar sesión'));
-        return;
-      }
-
-      await new Promise(r => setTimeout(r, 500));
-      
-      const currentUser = useAuthStore.getState().user;
-      
-      if (currentUser && !currentUser.isSubscriptionActive) {
-        setIsLoading(false);
-        setSubscriptionExpired(true);
         return;
       }
 
@@ -66,7 +54,7 @@ export default function Login() {
       navigate('/dashboard');
     } catch {
       setIsLoading(false);
-      setError('Ocurrió un error inesperado. Verifique su conexión a internet e intente de nuevo.');
+      setError('Ocurrió un error inesperado. Intente de nuevo.');
     }
   };
 
@@ -81,7 +69,7 @@ export default function Login() {
           </div>
           <h2 className="text-2xl font-bold text-text">Bienvenido de nuevo</h2>
           <p className="mt-2 text-sm text-text-secondary">
-            Ingrese a su cuenta para gestionar su inventario
+            Ingrese su PIN para acceder al inventario
           </p>
         </div>
 
@@ -92,68 +80,30 @@ export default function Login() {
             </div>
           )}
           
-          {subscriptionExpired && (
-            <div className="rounded-xl bg-warning/10 p-4 border border-warning/30">
-              <p className="text-sm text-danger font-medium mb-3">
-                Su período de prueba ha vencido. 
-                Contacte al +53 54523884 para renovar su Plan Profesional y seguir usando la app.
-              </p>
-              <div className="flex flex-col gap-2">
-                <a 
-                  href="https://wa.me/5354523884?text=Hola,%20quiero%20renovar%20mi%20Plan%20Profesional" 
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 w-full py-2 bg-primary text-black rounded-lg font-medium hover:bg-primary/90"
-                >
-                  <MessageCircle className="h-4 w-4" />
-                  Contactar a +53 54523884
-                </a>
-                <button
-                  type="button"
-                  onClick={() => window.location.href = '/'}
-                  className="text-sm text-text-secondary text-center hover:text-text"
-                >
-                  Página de inicio
-                </button>
-              </div>
-            </div>
-          )}
-          
           <div className="space-y-4">
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-text-secondary mb-1">
-                Correo Electrónico
-              </label>
-              <input
-                id="email"
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="flex h-10 w-full rounded-xl border border-border bg-bg px-3 py-2 text-sm text-text ring-offset-bg placeholder:text-text-secondary transition-all duration-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary focus-visible:shadow-[0_0_15px_-3px_rgba(255,193,7,0.3)]"
-                placeholder="tu@gmail.com"
-              />
-            </div>
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-text-secondary mb-1">
-                Contraseña
+              <label htmlFor="pin" className="block text-sm font-medium text-text-secondary mb-1">
+                PIN de acceso
               </label>
               <div className="relative">
                 <input
-                  id="password"
-                  type={showPassword ? "text" : "password"}
+                  id="pin"
+                  type={showPin ? "text" : "password"}
                   required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  autoFocus
+                  inputMode="numeric"
+                  maxLength={24}
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
                   className="flex h-10 w-full rounded-xl border border-border bg-bg px-3 py-2 pr-10 text-sm text-text ring-offset-bg placeholder:text-text-secondary transition-all duration-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary focus-visible:border-primary focus-visible:shadow-[0_0_15px_-3px_rgba(255,193,7,0.3)]"
-                  placeholder="••••••••"
+                  placeholder="••••••"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
+                  onClick={() => setShowPin(!showPin)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text"
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -169,12 +119,6 @@ export default function Login() {
               ) : 'Iniciar Sesión'}
             </Button>
           </div>
-
-          <p className="text-center text-sm text-text-secondary">
-            <Link to="/forgot-password" className="font-medium text-primary hover:underline">
-              ¿Olvidó su contraseña?
-            </Link>
-          </p>
         </form>
 
         <p className="text-center text-sm text-text-secondary mt-4">
@@ -184,9 +128,9 @@ export default function Login() {
         </p>
 
         <p className="text-center text-sm text-text-secondary">
-          ¿No tiene una cuenta?{' '}
+          ¿Primera vez?{' '}
           <Link to="/register" className="font-medium text-primary hover:underline">
-            Regístrate aquí
+            Configurar mi negocio
           </Link>
         </p>
       </div>

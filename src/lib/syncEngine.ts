@@ -1,7 +1,7 @@
 import { getPendingSyncItems, removeSyncItem, updateSyncItemStatus, addToSyncQueue, getSyncQueueCount, getFailedSyncItems, cleanSyncLog } from './dexieDb';
 import type { SyncQueueItem } from './dexieDb';
 import { useDatabaseStore } from '../store/dbStore';
-import { supabase } from './supabase';
+import { localDb as supabase } from './db/localClient';
 import { toast } from 'sonner';
 
 type SyncEvent = 'start' | 'progress' | 'complete' | 'error' | 'idle' | 'synced' | 'duplicate';

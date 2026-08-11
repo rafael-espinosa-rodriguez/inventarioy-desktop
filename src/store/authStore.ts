@@ -1,23 +1,14 @@
 import { create } from 'zustand';
-import { supabase } from '../lib/supabase';
+import { localDb as supabase } from '../lib/db/localClient';
 import { clearLocalData } from '../lib/dexieDb';
 import { useDatabaseStore } from './dbStore';
 import { logger } from '../lib/logger';
 import { syncEngine } from '../lib/syncEngine';
 import { setRealtimeUserId } from '../lib/realtimeSync';
 
+// Versión desktop: el servidor local siempre está disponible.
 const checkRealInternetConnection = async (): Promise<boolean> => {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const { error } = await supabase.from('products').select('id').limit(1).abortSignal(controller.signal).maybeSingle();
-
-    clearTimeout(timeoutId);
-    return !error;
-  } catch {
-    return false;
-  }
+  return true;
 };
 
 const withTimeout = async <T>(promise: Promise<T> | any, timeoutMs: number = 10000): Promise<T> => {
@@ -35,18 +26,32 @@ const withTimeout = async <T>(promise: Promise<T> | any, timeoutMs: number = 100
   }
 };
 
+export interface LicenseInfo {
+  status: 'trialing' | 'active' | 'expired';
+  trialStartedAt: string | null;
+  trialEndsAt: string | null;
+  validUntil: string | null;
+  daysRemaining: number;
+  trialDays: number;
+  businessCode: string;
+  isDeveloper?: boolean;
+  hasLicenseKey?: boolean;
+  maxSeenTime?: string | null;
+}
+
 export interface User {
   id: string;
   email: string;
   name: string;
   businessName: string;
-  role: 'admin' | 'user';
+  role: string;
   createdAt: string;
   subscription: {
     status: 'trialing' | 'active' | 'past_due' | 'canceled';
     trialEndsAt: string;
     validUntil: string | null;
   };
+  license: LicenseInfo;
   isSubscriptionActive: boolean;
   generateTicket: boolean;
   ticketMessage: string;
@@ -66,23 +71,42 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (pin: string, businessCode?: string) => Promise<{ success: boolean; error?: string }>;
   register: (email: string, password: string, name: string, businessName: string, phone?: string) => Promise<{ success: boolean; error?: string }>;
   forgotPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   updateSubscription: (updates: Partial<User['subscription']>) => void;
+  activateLicense: (key: string) => Promise<{ success: boolean; error?: string }>;
+  refreshLicense: () => Promise<void>;
+  generateLicense: (code: string, months?: number, until?: string) => Promise<{ success: boolean; key?: string; validUntil?: string; error?: string }>;
+  simulateLicense: (action: string, options?: { code?: string; months?: number; until?: string }) => Promise<{ success: boolean; key?: string; error?: string }>;
   fetchUser: () => Promise<boolean>;
   initialize: () => Promise<void>;
 }
 
 let _isInitializing = false;
-let _authListenerSubscription: any = null;
 
-const checkSubscriptionActive = (role: string, subscription: User['subscription']): boolean => {
-  if (role === 'admin') {
-    return true;
+const DEFAULT_LICENSE: LicenseInfo = {
+  status: 'trialing',
+  trialStartedAt: null,
+  trialEndsAt: null,
+  validUntil: null,
+  daysRemaining: 7,
+  trialDays: 7,
+  businessCode: '',
+};
+
+const licenseToSubscription = (license: LicenseInfo): User['subscription'] => {
+  if (license.status === 'active') {
+    return { status: 'active', trialEndsAt: license.trialEndsAt || '', validUntil: license.validUntil };
   }
-  
+  if (license.status === 'trialing') {
+    return { status: 'trialing', trialEndsAt: license.trialEndsAt || '', validUntil: null };
+  }
+  return { status: 'canceled', trialEndsAt: license.trialEndsAt || '', validUntil: null };
+};
+
+const checkSubscriptionActive = (subscription: User['subscription']): boolean => {
   if (subscription.status === 'canceled') {
     return false;
   }
@@ -199,9 +223,18 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
     logger.info('Inicializando autenticación...');
 
+    // Si el usuario cerró sesión explícitamente, NO restaurar la sesión del servidor
+    // (el servidor local /api/auth/session siempre devuelve el owner).
+    if (localStorage.getItem('inventarioy_logged_out') === '1') {
+      logger.info('Sesión cerrada previamente — no restaurar');
+      set({ user: null, isAuthenticated: false, isLoading: false });
+      _isInitializing = false;
+      return;
+    }
+
     const savedUserData = localStorage.getItem('inventarioy_user');
 
-    // Si hay datos de usuario guardados, mostrarlos inmediatamente mientras se verifica la sesión
+    // Si hay datos de usuario guardados, mostrarlos inmediatamente mientras se verifica la sesión local
     if (savedUserData) {
       try {
         const userData = JSON.parse(savedUserData);
@@ -213,239 +246,130 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       set({ isLoading: true });
     }
 
-    // === OPTIMIZACIÓN OFFLINE ===
-    // Si no hay conexión, restaurar sesión guardada inmediatamente sin timeout
-    if (!navigator.onLine) {
-      logger.info('📴 Modo offline — restaurando sesión guardada', { 
-        hasSavedUserData: !!savedUserData
-      });
-      if (savedUserData) {
-        try {
-          const userData = JSON.parse(savedUserData);
-          set({ user: userData, isAuthenticated: true, isLoading: false });
-          logger.info('✅ Sesión restaurada offline', { email: userData.email });
-        } catch {
-          set({ isLoading: false });
-          logger.warn('Error parseando savedUserData');
-        }
-      } else {
-        set({ isLoading: false });
-        logger.info('❌ No hay savedUserData para restaurar');
-      }
-      _isInitializing = false;
-      return;
-    }
-
     try {
       const { data: { session } } = await Promise.race([
         supabase.auth.getSession(),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('AuthTimeout')), 30000)
+          setTimeout(() => reject(new Error('AuthTimeout')), 15000)
         ),
       ]);
 
-      if (session?.user) {
-        await get().fetchUser();
-      } else {
-        if (savedUserData) {
+      if (session?.id) {
+        if (!get().user) {
+          await get().fetchUser();
+        } else {
+          set({ isLoading: false });
+        }
+      } else if (savedUserData) {
+        try {
           const userData = JSON.parse(savedUserData);
           set({ user: userData, isAuthenticated: true, isLoading: false });
-        } else {
-          set({ isLoading: false });
-        }
-      }
-
-      if (!_authListenerSubscription) {
-        logger.info('Creando listener de autenticación...');
-        _authListenerSubscription = supabase.auth.onAuthStateChange(async (event, session) => {
-          logger.info('Auth state change:', event);
-          if (event === 'SIGNED_IN' && session?.user) {
-            await get().fetchUser();
-          } else if (event === 'SIGNED_OUT') {
-            if (!navigator.onLine) {
-              logger.info('[Auth] SIGNED_OUT ignorado — modo offline');
-              return;
-            }
-            set({ user: null, isAuthenticated: false, isLoading: false });
-          }
-        });
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError' && err?.message?.includes('Lock broken')) {
-        logger.warn('AbortError por multi-pestaña en initialize, restaurando sesión guardada');
-        if (savedUserData) {
-          try {
-            const userData = JSON.parse(savedUserData);
-            set({ user: userData, isAuthenticated: true, isLoading: false });
-          } catch {
-            set({ isLoading: false });
-          }
-        } else {
-          set({ isLoading: false });
-        }
-      } else if (err?.message === 'AuthTimeout') {
-        logger.warn('Timeout en getSession');
-        if (savedUserData) {
-          try {
-            const userData = JSON.parse(savedUserData);
-            set({ user: userData, isAuthenticated: true, isLoading: false });
-          } catch {
-            set({ isLoading: false });
-          }
-        } else {
-          set({ isLoading: false });
-        }
-      } else if (err?.message?.includes('429') || err?.status === 429) {
-        logger.warn('Rate limit alcanzado en autenticación, reintentando en 5 segundos...');
-        await new Promise(r => setTimeout(r, 5000));
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user) {
-            await get().fetchUser();
-          } else {
-            set({ isLoading: false });
-          }
         } catch {
           set({ isLoading: false });
         }
-      } else if (err?.message?.includes('fetch') || err?.message?.includes('network') || err?.message?.includes('NetworkError') || err?.name === 'TypeError') {
-        // Error de red (posible caso donde navigator.onLine = true pero no hay internet real)
-        logger.warn('Error de red en getSession, restaurando sesión guardada:', err.message);
-        if (savedUserData) {
-          try {
-            const userData = JSON.parse(savedUserData);
-            set({ user: userData, isAuthenticated: true, isLoading: false });
-            logger.info('✅ Sesión restaurada tras error de red', { email: userData.email });
-          } catch {
-            set({ isLoading: false });
-          }
-        } else {
-          set({ isLoading: false });
-          logger.info('❌ No hay savedUserData para restaurar tras error de red');
-        }
-      } else if (import.meta.env.DEV) {
-        logger.error('Error en initialize:', err);
+      } else {
         set({ isLoading: false });
+      }
+    } catch (err: any) {
+      logger.warn('Error en getSession local:', err?.message || err);
+      if (savedUserData) {
+        try {
+          const userData = JSON.parse(savedUserData);
+          set({ user: userData, isAuthenticated: true, isLoading: false });
+        } catch {
+          set({ isLoading: false });
+        }
       } else {
         set({ isLoading: false });
       }
     } finally {
       _isInitializing = false;
+      // Refrescar la licencia de inmediato (no esperar el primer tick de 60s):
+      // cuando se restaura un usuario cacheado, el estado de licencia puede estar
+      // desactualizado (p. ej. vencida mientras la app estuvo cerrada).
+      if (get().user) {
+        void get().refreshLicense();
+      }
     }
   },
 
   fetchUser: async () => {
     logger.info('fetchUser llamado...');
     try {
-      const { data: { user: authUser }, error: authError } = await withTimeout(
-        supabase.auth.getUser(),
+      const { data, error } = (await withTimeout(
+        supabase.auth.getSession(),
         10000
-      ) as any;
-      
-      if (authError) {
-        logger.error('Error en getUser:', authError);
-        return false;
-      }
-      
-      if (!authUser) {
-        logger.info('No hay usuario autenticado');
+      )) as any;
+
+      if (error) {
+        logger.error('Error en getSession:', error);
+        set({ isLoading: false });
         return false;
       }
 
-      let profile = null;
-      let retries = 0;
-      const maxRetries = 3;
-
-      while (!profile && retries < maxRetries) {
-        try {
-          const result: any = await withTimeout(
-            supabase
-              .from('profiles')
-              .select('*')
-              .eq('id', authUser.id)
-              .single(),
-            10000
-          );
-
-          if (result.error && (result.error as any).status === 406) {
-            retries++;
-            await new Promise(r => setTimeout(r, 300 * retries));
-            continue;
-          }
-
-          profile = result.data;
-          break;
-        } catch (dbErr: any) {
-          logger.error('Error de base de datos en fetchUser:', dbErr);
-          retries++;
-          if (retries >= maxRetries) throw dbErr;
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
+      const profile = data?.session || null;
 
       if (!profile) {
-        logger.warn('Perfil no encontrado, intentando auto-crear...');
-        const { data: createdProfile, error: createError } = await withTimeout(
-          supabase.from('profiles')
-            .upsert({
-              id: authUser.id,
-              email: authUser.email,
-              name: authUser.user_metadata?.name || '',
-              business_name: authUser.user_metadata?.business_name || '',
-              phone: authUser.user_metadata?.phone || '',
-              role: 'user',
-              subscription_status: 'trialing',
-              trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-              theme_preference: 'dark',
-            })
-            .select()
-            .single(),
-          10000
-        ) as any;
-
-        if (createError || !createdProfile) {
-          logger.error('Fallo al auto-crear perfil:', createError);
-          set({ isLoading: false });
-          return false;
-        }
-
-        profile = createdProfile;
+        logger.info('No hay sesión local activa');
+        set({ isLoading: false });
+        return false;
       }
 
-      const subscription = {
-        status: (profile?.subscription_status as any) || 'trialing',
-        trialEndsAt: profile?.trial_ends_at || null,
-        validUntil: profile?.valid_until ? profile.valid_until.split('T')[0] : null,
-      };
-
       const user: User = {
-        id: authUser.id,
-        email: authUser.email || '',
-        name: profile?.name || authUser.user_metadata?.name || '',
-        businessName: profile?.business_name || '',
-        role: (profile?.role as 'admin' | 'user') || 'user',
-        createdAt: authUser.created_at,
-        subscription,
-        isSubscriptionActive: checkSubscriptionActive(profile?.role || 'user', subscription),
-        generateTicket: profile?.generate_ticket ?? false,
-        ticketMessage: profile?.ticket_message || '¡Gracias por su visita!',
-        usdEnabled: profile?.usd_enabled ?? false,
-        usdRate: profile?.usd_rate ?? 320,
-        eurEnabled: profile?.eur_enabled ?? false,
-        eurRate: profile?.eur_rate ?? 350,
-        cupTransferEnabled: profile?.cup_transfer_enabled ?? false,
-        phone: profile?.phone || '',
-        address: profile?.address || '',
-        businessHours: profile?.business_hours || '',
-        businessCode: profile?.business_code || '',
-        themePreference: (profile?.theme_preference as 'light' | 'dark') || 'dark',
+        id: profile.id || 'owner',
+        email: profile.email || '',
+        name: profile.name || '',
+        businessName: profile.businessName || '',
+        role: profile.role || 'owner',
+        createdAt: profile.created_at || new Date().toISOString(),
+        subscription: {
+          status: 'active',
+          trialEndsAt: '',
+          validUntil: null,
+        },
+        license: DEFAULT_LICENSE,
+        isSubscriptionActive: true,
+        generateTicket: !!profile.ticketMessage || false,
+        ticketMessage: profile.ticketMessage || '¡Gracias por su visita!',
+        usdEnabled: !!profile.usdEnabled,
+        usdRate: profile.usdRate ?? 320,
+        eurEnabled: !!profile.eurEnabled,
+        eurRate: profile.eurRate ?? 350,
+        cupTransferEnabled: !!profile.cupTransferEnabled,
+        phone: profile.phone || '',
+        address: profile.address || '',
+        businessHours: profile.businessHours || '',
+        businessCode: profile.business_code || '',
+        themePreference: (localStorage.getItem('theme-preference') as 'light' | 'dark') || 'dark',
       };
 
-      logger.info('Usuario cargado', { email: user.email, role: user.role, subscriptionActive: user.isSubscriptionActive });
+      // Consultar estado de licencia real (trial / activa / vencida)
+      const licenseRes = (await supabase.license.status()) as any;
+      if (licenseRes?.data) {
+        const lic: LicenseInfo = {
+          status: licenseRes.data.status || 'trialing',
+          trialStartedAt: licenseRes.data.trialStartedAt || null,
+          trialEndsAt: licenseRes.data.trialEndsAt || null,
+          validUntil: licenseRes.data.validUntil || null,
+          daysRemaining: licenseRes.data.daysRemaining ?? 0,
+          trialDays: licenseRes.data.trialDays ?? 7,
+          businessCode: licenseRes.data.businessCode || user.businessCode,
+          isDeveloper: !!licenseRes.data.isDeveloper,
+          hasLicenseKey: !!licenseRes.data.hasLicenseKey,
+          maxSeenTime: licenseRes.data.maxSeenTime ?? null,
+        };
+        user.license = lic;
+        user.subscription = licenseToSubscription(lic);
+        user.businessCode = lic.businessCode || user.businessCode;
+        user.isSubscriptionActive = checkSubscriptionActive(user.subscription);
+      }
+
+      logger.info('Usuario cargado', { email: user.email, role: user.role, license: user.license.status });
       
       // Guardar usuario en localStorage para persistencia de sesión
       if (typeof window !== 'undefined') {
         localStorage.setItem('inventarioy_user', JSON.stringify(user));
+        localStorage.removeItem('inventarioy_logged_out');
       }
       
       set({ user, isAuthenticated: true, isLoading: false });
@@ -458,29 +382,27 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     }
   },
 
-  login: async (email: string, password: string) => {
+  login: async (pin: string) => {
     try {
-      const isOnline = navigator.onLine && await checkRealInternetConnection();
-      if (!isOnline) {
-        return { success: false, error: 'Sin conexión a internet. Inicia sesión cuando tengas internet.' };
-      }
-
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { data, error } = (await supabase.auth.signInWithPassword({
+        pin,
+      })) as any;
 
       if (error) {
-        return { success: false, error: translateError(error.message ?? String(error)) };
+        const msg = error?.message ?? String(error);
+        return { success: false, error: translateError(msg) };
       }
 
-      if (data.user) {
-        localStorage.setItem('saved_email', email);
+      if (data?.success) {
+        // Guardar rol verificado (sistema de roles por PIN)
+        if (data.pinRole) {
+          localStorage.setItem('verifiedRole', data.pinRole);
+          localStorage.setItem('verifiedRoleName', data.pinName || '');
+        }
 
         const userLoaded = await get().fetchUser();
         if (!userLoaded) {
-          localStorage.removeItem('saved_email');
-          return { success: false, error: 'Error al cargar los datos del usuario. Intente de nuevo.' };
+          return { success: false, error: 'Error al cargar los datos del negocio. Intente de nuevo.' };
         }
         return { success: true };
       }
@@ -488,81 +410,16 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       return { success: false, error: 'Error desconocido al iniciar sesión' };
     } catch (err) {
       logger.error('Error inesperado en login:', err);
-      return { success: false, error: 'Sin conexión a internet. Verifique su red e intente de nuevo.' };
+      return { success: false, error: 'No se pudo conectar con el servidor local. Verifique la aplicación.' };
     }
   },
 
-  register: async (email: string, password: string, name: string, businessName: string, phone?: string) => {
-    try {
-      const isOnline = navigator.onLine && await checkRealInternetConnection();
-      if (!isOnline) {
-        return { success: false, error: 'Sin conexión a internet. Intente cuando tenga internet.' };
-      }
-
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name,
-            business_name: businessName,
-            phone: phone || '',
-          },
-        },
-      });
-
-      if (error) {
-        return { success: false, error: translateError(error.message ?? String(error)) };
-      }
-
-      if (data?.user) {
-        const { error: profileError } = await supabase.from('profiles').upsert({
-          id: data.user.id,
-          email,
-          name,
-          business_name: businessName,
-          phone: phone || '',
-          role: 'user',
-          subscription_status: 'trialing',
-          trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          theme_preference: 'dark',
-        });
-
-        if (profileError) {
-          logger.error('Error al crear perfil en registro:', profileError);
-          return { success: false, error: 'Error al crear el perfil. Intente de nuevo.' };
-        }
-
-        return { success: true };
-      }
-
-      return { success: false, error: 'Error desconocido al registrar' };
-    } catch (err) {
-      logger.error('Error inesperado en register:', err);
-      return { success: false, error: 'Sin conexión a internet. Verifique su red e intente de nuevo.' };
-    }
+  register: async () => {
+    return { success: false, error: 'El registro no está disponible en la versión desktop. Use el PIN configurado por el administrador.' };
   },
 
-  forgotPassword: async (email: string) => {
-    try {
-      const isOnline = navigator.onLine && await checkRealInternetConnection();
-      if (!isOnline) {
-        return { success: false, error: 'Sin conexión a internet. Intente cuando tenga internet.' };
-      }
-
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-
-      if (error) {
-        return { success: false, error: translateError(error.message ?? String(error)) };
-      }
-
-      return { success: true };
-    } catch (err) {
-      logger.error('Error inesperado en forgotPassword:', err);
-      return { success: false, error: 'Sin conexión a internet. Verifique su red e intente de nuevo.' };
-    }
+  forgotPassword: async () => {
+    return { success: false, error: 'La recuperación de contraseña no está disponible en la versión desktop. Contacte al administrador.' };
   },
 
   logout: async () => {
@@ -574,9 +431,11 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
       localStorage.removeItem('saved_email');
       localStorage.removeItem('inventarioy_user');
+      localStorage.removeItem('verifiedRole');
+      localStorage.removeItem('verifiedRoleName');
+      localStorage.setItem('inventarioy_logged_out', '1');
 
       _isInitializing = false;
-      _authListenerSubscription = null;
       set({ user: null, isAuthenticated: false, isLoading: false });
       logger.info('Estado limpiado');
 
@@ -644,17 +503,127 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     if (!user) return;
 
     const newSubscription = { ...user.subscription, ...updates };
-    
-    await supabase
-      .from('profiles')
-      .update({ 
-        subscription_status: newSubscription.status,
-        valid_until: newSubscription.validUntil,
-      })
-      .eq('id', user.id);
+
+    try {
+      await supabase.settings.set('subscription', {
+        status: newSubscription.status,
+        validUntil: newSubscription.validUntil,
+      });
+    } catch (e) {
+      logger.warn('No se pudo guardar la suscripción local:', e);
+    }
 
     set({
       user: { ...user, subscription: newSubscription },
     });
+  },
+
+  activateLicense: async (key) => {
+    try {
+      const res = (await supabase.license.activate(String(key).trim())) as any;
+      if (res?.error) {
+        return { success: false, error: res.error?.message || 'Clave de activación inválida' };
+      }
+      if (res?.data?.state) {
+        const prevLicense = get().user?.license;
+        const lic: LicenseInfo = {
+          status: res.data.state.status || 'active',
+          trialStartedAt: res.data.state.trialStartedAt || null,
+          trialEndsAt: res.data.state.trialEndsAt || null,
+          validUntil: res.data.state.validUntil || null,
+          daysRemaining: res.data.state.daysRemaining ?? 0,
+          trialDays: res.data.state.trialDays ?? 7,
+          businessCode: get().user?.businessCode || '',
+          isDeveloper: prevLicense?.isDeveloper,
+          hasLicenseKey: prevLicense?.hasLicenseKey,
+          maxSeenTime: prevLicense?.maxSeenTime,
+        };
+        const user = get().user;
+        if (user) {
+          const next: User = {
+            ...user,
+            license: lic,
+            subscription: licenseToSubscription(lic),
+            isSubscriptionActive: checkSubscriptionActive(licenseToSubscription(lic)),
+          };
+          set({ user: next });
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('inventarioy_user', JSON.stringify(next));
+          }
+        }
+      }
+      return { success: true };
+    } catch (err: any) {
+      logger.error('Error activando licencia:', err);
+      return { success: false, error: 'No se pudo conectar con el servidor local.' };
+    }
+  },
+
+  refreshLicense: async () => {
+    const { user } = get();
+    if (!user) return;
+    try {
+      const res = (await supabase.license.status()) as any;
+      if (!res?.data) return;
+      const lic: LicenseInfo = {
+        status: res.data.status || 'trialing',
+        trialStartedAt: res.data.trialStartedAt || null,
+        trialEndsAt: res.data.trialEndsAt || null,
+        validUntil: res.data.validUntil || null,
+        daysRemaining: res.data.daysRemaining ?? 0,
+        trialDays: res.data.trialDays ?? 7,
+        businessCode: res.data.businessCode || user.businessCode,
+        isDeveloper: !!res.data.isDeveloper,
+        hasLicenseKey: !!res.data.hasLicenseKey,
+        maxSeenTime: res.data.maxSeenTime ?? null,
+      };
+      const next: User = {
+        ...user,
+        license: lic,
+        subscription: licenseToSubscription(lic),
+        isSubscriptionActive: checkSubscriptionActive(licenseToSubscription(lic)),
+        businessCode: lic.businessCode || user.businessCode,
+      };
+      set({ user: next });
+    } catch (err) {
+      logger.warn('Error refrescando licencia:', err);
+    }
+  },
+
+  generateLicense: async (code, months, until) => {
+    try {
+      const res = (await supabase.license.generate({
+        code: String(code).trim(),
+        months,
+        until: until ? String(until).trim() : undefined,
+      })) as any;
+      if (res?.error) {
+        return { success: false, error: res.error?.message || 'No se pudo generar la clave' };
+      }
+      return { success: true, key: res.data?.key, validUntil: res.data?.validUntil };
+    } catch (err: any) {
+      logger.error('Error generando licencia:', err);
+      return { success: false, error: 'No se pudo conectar con el servidor local.' };
+    }
+  },
+
+  simulateLicense: async (action, options) => {
+    try {
+      const res = (await supabase.license.simulate({
+        action: String(action).trim(),
+        code: options?.code ? String(options.code).trim() : undefined,
+        months: options?.months,
+        until: options?.until ? String(options.until).trim() : undefined,
+      })) as any;
+      if (res?.error) {
+        return { success: false, error: res.error?.message || 'No se pudo simular' };
+      }
+      // Refrescar el estado de licencia desde el servidor tras simular.
+      await get().refreshLicense();
+      return { success: true, key: res.data?.key };
+    } catch (err: any) {
+      logger.error('Error simulando licencia:', err);
+      return { success: false, error: 'No se pudo conectar con el servidor local.' };
+    }
   },
 }));
