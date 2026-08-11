@@ -9,9 +9,12 @@ coverage/
 .vercel
 .env*.local
 test-results/
+playwright-report/
+release/
 screenshots/
 .agents/
-scripts/
+scripts/*
+!scripts/*.mjs
 capture-screenshots.mjs
 inventarioy-reel-1/
 renders/
