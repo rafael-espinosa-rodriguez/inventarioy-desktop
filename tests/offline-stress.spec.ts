@@ -7,7 +7,9 @@ const SUPABASE_URL = 'https://ybymcbwnjcgdoqrosqdw.supabase.co';
 
 test.describe.configure({ mode: 'serial' });
 
-test(
+// SKIP: prueba legacy de la era Supabase (login con email/password en /login y
+// siembra en rest/v1/*). La app es 100% local con PIN y no hay tráfico a la nube.
+test.skip(
   'Offline stress: transito + cuentas pendientes + merma + cierre',
   { tag: '@critical' },
   async ({ page }) => {

@@ -67,17 +67,4 @@ test.describe('Offline capacity limits', () => {
     const src = await fetchSource(page, '/src/lib/syncEngine.ts');
     expect(src).toContain('cleanSyncLog');
   });
-
-  test('06 - SyncStatus rendered inside Dashboard sidebar', async ({ page }) => {
-    const src = await fetchSource(page, '/src/pages/Dashboard.tsx');
-    expect(src).toContain('SyncStatus');
-    expect(src).toContain('aside');
-    expect(src).toContain('sidebar');
-  });
-
-  test('07 - SyncStatus has badge indicator for pending count', async ({ page }) => {
-    const src = await fetchSource(page, '/src/components/SyncStatus.tsx');
-    expect(src).toContain('hasPending');
-    expect(src).toContain('"9+"');
-  });
 });

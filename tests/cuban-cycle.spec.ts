@@ -112,7 +112,9 @@ async function closeModals(page: Page) {
   await page.waitForTimeout(500);
 }
 
-test.describe('Ciclo Cubano', () => {
+// SKIP: prueba legacy de la era Supabase (autentica contra el proyecto en la nube y
+// siembra/lee rest/v1/products). La app es 100% local con PIN y no hay tráfico a la nube.
+test.describe.skip('Ciclo Cubano', () => {
   test('ciclo completo offline → sync → re-offline', { tag: '@critical' }, async ({ page }) => {
     test.setTimeout(600000);
     const pageErrors: string[] = [];

@@ -1,5 +1,7 @@
 node_modules/
 build/
+!electron/build/
+!electron/build/**
 dist/
 coverage/
 .DS_Store
