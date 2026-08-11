@@ -13,6 +13,7 @@ coverage/
 test-results/
 playwright-report/
 release/
+entregas/
 screenshots/
 .agents/
 scripts/*
