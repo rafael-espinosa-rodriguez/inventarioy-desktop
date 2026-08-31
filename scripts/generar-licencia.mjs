@@ -1,5 +1,5 @@
 // Genera una clave de activación de licencia para un cliente.
-// Uso: node scripts/generar-licencia.mjs --codigo ABC123 --meses 1
+// Uso: node scripts/generar-licencia.mjs --codigo 3SU4PH --meses 1
 //   --codigo:    código de negocio del cliente (visible en Ajustes → Licencia)
 //   --meses:     cantidad de meses a partir de hoy (1 = 30 días, 3, 6, 12)
 //   --hasta:     (opcional) fecha de vencimiento manual ISO (YYYY-MM-DD), reemplaza --meses
@@ -30,9 +30,9 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv);
 
 if (args.help || !args.code || (!args.months && !args.until && !args.vitalicia)) {
-  console.log('Uso: node scripts/generar-licencia.mjs --codigo ABC123 --meses 1');
-  console.log('     node scripts/generar-licencia.mjs --codigo ABC123 --hasta 2026-09-30');
-  console.log('     node scripts/generar-licencia.mjs --codigo ABC123 --vitalicia');
+  console.log('Uso: node scripts/generar-licencia.mjs --codigo 3SU4PH --meses 1');
+  console.log('     node scripts/generar-licencia.mjs --codigo 3SU4PH --hasta 2026-09-30');
+  console.log('     node scripts/generar-licencia.mjs --codigo 3SU4PH --vitalicia');
   process.exit(args.help ? 0 : 1);
 }
 

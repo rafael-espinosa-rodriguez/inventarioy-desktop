@@ -12,6 +12,7 @@ import {
   queryRaw,
   getRaw,
   transaction,
+  runBatchWrite,
   getDataDir,
   type Filter,
   type Order,
@@ -25,6 +26,8 @@ import {
   generateLicenseKey,
   computeValidUntil,
   formatLicenseKey,
+  generatePinResetKey,
+  verifyPinResetKey,
   type LicenseState,
 } from './license';
 
@@ -81,12 +84,21 @@ function verifyPinHash(pin: string, stored: string): boolean {
       return false;
     }
   }
-  return hashPin(pin) === stored;
+  // Legacy SHA-256: comparación timing-safe + warning
+  const legacyHash = hashPin(pin);
+  const a = Buffer.from(legacyHash, 'hex');
+  const b = Buffer.from(stored, 'hex');
+  if (a.length !== b.length) return false;
+  const match = timingSafeEqual(a, b);
+  if (match) {
+    console.warn('[SEC] PIN con hash legacy SHA-256 detectado. Re-configurar el PIN desde el panel de administración para migrar a scrypt.');
+  }
+  return match;
 }
 
 // ---------- Token de sesión local ----------
 // Protege los endpoints de escritura: solo el renderer (que obtiene el token
-// vía /api/auth/session, /api/auth/login o /api/auth/setup) puede escribir.
+// vía /api/auth/login o /api/auth/setup) puede escribir.
 const AUTH_TOKEN_KEY = 'auth_token';
 
 function getOrCreateToken(): string {
@@ -104,6 +116,33 @@ function getOrCreateToken(): string {
     [AUTH_TOKEN_KEY, JSON.stringify(token), new Date().toISOString()]
   );
   return token;
+}
+
+// ---------- Rol verificado en servidor ----------
+// El rol de escritura NO se toma de un header del cliente (forjable). Se guarda
+// en el servidor al verificar exitosamente un PIN (login o verify_access_pin) y
+// se usa para autorizar /api/query. El header x-inventarioy-role se ignora.
+const ACTIVE_ROLE_KEY = 'active_session_role';
+
+function setActiveRole(role: string): void {
+  runRaw(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    [ACTIVE_ROLE_KEY, JSON.stringify(role), new Date().toISOString()]
+  );
+}
+
+function getActiveRole(): string | null {
+  const row = getRaw<any>('SELECT value FROM settings WHERE key = ?', [ACTIVE_ROLE_KEY]);
+  if (!row?.value) return null;
+  try {
+    const parsed = JSON.parse(row.value);
+    return (typeof parsed === 'string' && roleExists(parsed)) ? parsed : null;
+  } catch { return null; }
+}
+
+function clearActiveRole(): void {
+  runRaw('DELETE FROM settings WHERE key = ?', [ACTIVE_ROLE_KEY]);
 }
 
 // ---------- Validación de Origin (anti-CSRF / DNS rebinding) ----------
@@ -172,83 +211,170 @@ function formatBlockRemaining(seconds: number): string {
   return `${s} s`;
 }
 
-const ROLE_MODULES: Record<string, string[]> = {
-  '/dashboard': ['owner', 'economist', 'admin'],
-  '/inventory': ['owner', 'economist', 'admin'],
-  '/movements': ['owner', 'economist', 'admin'],
-  '/transit': ['owner', 'economist', 'admin'],
-  '/sales': ['owner', 'economist', 'supervisor', 'clerk'],
-  '/closings': ['owner', 'economist', 'supervisor'],
-  '/hr': ['owner', 'economist'],
-  '/recipes': ['owner', 'economist'],
-  '/consumption': ['owner', 'economist'],
-  '/analysis': ['owner', 'economist'],
-  '/charts': ['owner', 'economist'],
-  '/filtered': ['owner', 'economist'],
-  '/settings': ['owner'],
-  '/action-logs': ['owner', 'economist'],
+// ---------- Rate limiting simple (login / verificación de PIN) ----------
+// El lockout por PIN (3 intentos/5 min) ya mitiga la fuerza bruta, pero este
+// límite por IP reduce además abuso a la API (login, verify, setup) desde la LAN.
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minuto
+const RATE_LIMIT_MAX = 30;              // máx. 30 llamadas por minuto por IP
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function isRateLimited(request: any): boolean {
+  const ip = String(request.ip || 'unknown');
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+  if (!bucket || now > bucket.resetAt) {
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  bucket.count += 1;
+  if (bucket.count > RATE_LIMIT_MAX) return true;
+  return false;
+}
+
+function rateLimitReply(reply: any) {
+  return reply.code(429).send({
+    data: null,
+    error: { message: 'Demasiadas solicitudes. Intente de nuevo en un minuto.', code: 'RATE_LIMITED' },
+  });
+}
+
+// Roles legados conocidos (claves históricas). La fuente de verdad son los
+// módulos por rol en la tabla `roles`; estos mapas son solo fallback.
+const ROLE_LABELS: Record<string, string> = {
+  owner: 'Dueño/a',
+  economist: 'Económico/a',
+  admin: 'Administrador/a',
+  supervisor: 'Supervisor/a',
+  clerk: 'Dependiente/a',
+};
+
+const LEGACY_ROLE_MODULES: Record<string, string[]> = {
+  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
+  admin: ['inventory', 'movements', 'transit'],
+  supervisor: ['sales', 'closings'],
+  clerk: ['sales'],
 };
 
 const ALL_KNOWN_ROLES = new Set(['owner', 'economist', 'admin', 'supervisor', 'clerk']);
 
-// ---------- Roles: qué tablas puede escribir cada rol vía /api/query ----------
-// Guardián honesto: el rol viene en el header x-inventarioy-role (localClient).
-// Refleja los mismos límites que MODULE_ROLES: un cajero no debe poder crear
-// pines, editar nómina, RRHH, recetas ni cierres.
-type TableRoleRule = string[] | { insert?: string[]; update?: string[]; delete?: string[] };
-
-const TABLE_WRITE_ROLES: Record<string, TableRoleRule> = {
-  // Ventas + flujo de caja: todos los roles que entran a /sales
-  sales: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  sale_items: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  pending_accounts: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  payments: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  products: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  movements: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  // Tránsito: un cajero consume tránsito al vender (update/delete), pero no crea
-  transit_items: {
-    insert: ['owner', 'economist', 'admin'],
-    update: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-    delete: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  },
-  // Inventario / estructura
-  categories: ['owner', 'economist', 'admin'],
-  warehouses: ['owner', 'economist', 'admin'],
-  product_warehouse: ['owner', 'economist', 'admin'],
-  // Cierres
-  daily_closings: ['owner', 'economist', 'supervisor'],
-  // RRHH / recetas / análisis (dueño y economista)
-  employees: ['owner', 'economist'],
-  departments: ['owner', 'economist'],
-  hr_documents: ['owner', 'economist'],
-  employee_documents: ['owner', 'economist'],
-  payroll_config: ['owner', 'economist'],
-  payroll_entries: ['owner', 'economist'],
-  recipes: ['owner', 'economist'],
-  recipe_ingredients: ['owner', 'economist'],
-  // Auditoría: todos registran acciones
-  action_logs: ['owner', 'economist', 'admin', 'supervisor', 'clerk'],
-  // Configuración: solo dueño
-  access_pins: ['owner'],
-  settings: ['owner'],
-  user_session: ['owner'],
-  profiles: ['owner'],
+// Módulo por ruta de dashboard: se usa para verificar que el PIN tiene acceso
+// al módulo (verify_access_pin). Las rutas sin mapeo no exigen módulo.
+const MODULE_BY_PATH: Record<string, string> = {
+  '/inventory': 'inventory',
+  '/movements': 'movements',
+  '/transit': 'transit',
+  '/sales': 'sales',
+  '/closings': 'closings',
+  '/hr': 'hr',
+  '/recipes': 'recipes',
+  '/consumption': 'consumption',
+  '/analysis': 'analysis',
+  '/charts': 'charts',
+  '/filtered': 'filtered',
+  '/settings': 'settings',
+  '/action-logs': 'hr',
 };
 
-// Ausencia de header => 'owner' (compatibilidad con llamadas históricas/tests).
-// Rol presente pero inválido => null (se bloquea).
+function getRoleModules(roleId: string): string[] {
+  const row = getRaw<any>('SELECT modules FROM roles WHERE id = ? AND is_active = 1', [roleId]);
+  if (row?.modules) {
+    try {
+      const parsed = JSON.parse(row.modules);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch { /* se usa fallback */ }
+  }
+  return LEGACY_ROLE_MODULES[roleId] || [];
+}
+
+function getRoleName(roleId: string): string {
+  const row = getRaw<any>('SELECT name FROM roles WHERE id = ?', [roleId]);
+  if (row?.name) return row.name;
+  return ROLE_LABELS[roleId] || roleId;
+}
+
+function roleExists(roleId: string): boolean {
+  if (ALL_KNOWN_ROLES.has(roleId)) return true;
+  const row = getRaw<any>('SELECT 1 FROM roles WHERE id = ?', [roleId]);
+  return !!row;
+}
+
+// ---------- Roles: qué tablas puede escribir cada rol vía /api/query ----------
+// Cada tabla se asocia a un MÓDULO del rol verificado (roles.modules).
+// El dueño pasa todo. Tablas sin regla (o `null`) no se restringen.
+type TableModuleRule = string | string[] | null | { insert?: string | string[]; update?: string | string[]; delete?: string | string[] };
+
+const TABLE_MODULES: Record<string, TableModuleRule> = {
+  // Ventas + flujo de caja: requiere módulo "sales"
+  sales: 'sales',
+  sale_items: 'sales',
+  pending_accounts: 'sales',
+  payments: 'sales',
+  // products/movements/transit/product_warehouse son tablas operativas que
+  // varias acciones escriben en conjunto (alta de producto, entrada/salida,
+  // merma, devolución desde tránsito, consumo por venta). Se permite el módulo
+  // que origina la acción para que cualquier combinación de módulos sea
+  // coherente y no deje estados parciales.
+  products: ['inventory', 'sales', 'transit'],
+  movements: ['sales', 'inventory', 'transit'],
+  // Tránsito: quien hace salidas (inventario) crea tránsito; quien vende lo
+  // consume (update/delete) con "transit" o "sales".
+  transit_items: {
+    insert: ['transit', 'inventory'],
+    update: ['transit', 'sales'],
+    delete: ['transit', 'sales'],
+  },
+  // Inventario / estructura
+  categories: 'inventory',
+  warehouses: 'inventory',
+  product_warehouse: ['inventory', 'sales', 'transit'],
+  // Cierres
+  daily_closings: 'closings',
+  // RRHH / nómina / recetas
+  employees: 'hr',
+  departments: 'hr',
+  hr_documents: 'hr',
+  employee_documents: 'hr',
+  payroll_config: 'hr',
+  payroll_entries: 'hr',
+  employee_loans: 'hr',
+  payroll_liquidations: 'hr',
+  employee_vacation_movements: 'hr',
+  payroll_periods: 'hr',
+  payroll_drafts: 'hr',
+  recipes: 'recipes',
+  recipe_ingredients: 'recipes',
+  // Auditoría: todos los roles registran acciones
+  action_logs: null,
+  // Configuración: solo dueño (módulo "settings" exclusivo del dueño)
+  access_pins: 'settings',
+  settings: 'settings',
+  user_session: 'settings',
+  profiles: 'settings',
+};
+
+// El rol de escritura se obtiene del rol verificado en el servidor (active_session_role),
+// establecido tras un login/verify exitoso. NO se confía en el header x-inventarioy-role.
+// Fallback: si aún no hay rol verificado (p. ej. actualización en caliente con sesión
+// persistida), se usa el rol del owner — alcanzable solo con token válido (requireToken).
 function getRequestRole(request: any): string | null {
-  const role = String(request.headers?.['x-inventarioy-role'] || '').trim();
-  if (!role) return 'owner';
-  return ALL_KNOWN_ROLES.has(role) ? role : null;
+  const active = getActiveRole();
+  if (active) return active;
+  const session = getRaw<any>('SELECT role FROM user_session WHERE id = ?', ['owner']);
+  const fallback = session?.role || 'owner';
+  return roleExists(fallback) ? fallback : null;
 }
 
 function roleAllowed(table: string, method: string, role: string): boolean {
-  const rule = TABLE_WRITE_ROLES[table];
-  if (!rule) return true; // tablas sin regla: no se restringe
-  if (Array.isArray(rule)) return rule.includes(role);
-  const methods = rule[method as 'insert' | 'update' | 'delete'];
-  return methods ? methods.includes(role) : true;
+  if (role === 'owner') return true; // el dueño siempre puede
+  const rule = TABLE_MODULES[table];
+  if (rule === undefined || rule === null) return true; // tablas sin regla: sin restricción
+  const moduleKey = typeof rule === 'string' ? rule : (rule as any)[method as 'insert' | 'update' | 'delete'];
+  if (!moduleKey) return true;
+  const modules = getRoleModules(role);
+  if (Array.isArray(moduleKey)) return moduleKey.some(m => modules.includes(m));
+  return modules.includes(moduleKey);
 }
 
 function serializeRow(row: any): any {
@@ -258,6 +384,12 @@ function serializeRow(row: any): any {
     if (key in out && typeof out[key] === 'string') {
       try { out[key] = JSON.parse(out[key]); } catch { /* keep */ }
     }
+  }
+  // Normalizar campos booleanos: node:sqlite devuelve INTEGER 0/1, y el resto
+  // de la app espera booleanos. Evita bugs del tipo `is_active !== false` que
+  // no excluyen a los inactivos porque `0 !== false` es `true`.
+  for (const key of ['is_active', 'is_individual', 'is_gasto_variable', 'is_consumo_directo', 'is_recipe', 'is_account_house', 'is_main', 'is_custom']) {
+    if (key in out) out[key] = !!out[key];
   }
   return out;
 }
@@ -305,6 +437,46 @@ const LICENSE_WHITELIST_TABLES = new Set(['settings']);
 function isWriteBlockedByLicense(): boolean {
   const state = computeLicenseState();
   return state.status === 'expired';
+}
+
+// Columnas de licencia y autenticación que NUNCA pueden modificarse vía /api/query.
+// El estado de licencia solo cambia por endpoints dedicados (/api/license/activate,
+// /api/auth/setup). Impide que el cliente se auto-conceda una licencia vitalicia.
+const PROTECTED_LICENSE_COLUMNS = new Set([
+  'license_key',
+  'license_valid_until',
+  'license_activated_at',
+  'trial_started_at',
+]);
+const PROTECTED_SETTINGS_KEYS = new Set([AUTH_TOKEN_KEY, LICENSE_MAX_SEEN_KEY, ACTIVE_ROLE_KEY]);
+
+// Elimina del payload las columnas protegidas de la tabla antes de escribir.
+function sanitizeWriteData(table: string, data: any): any {
+  if (!data || typeof data !== 'object') return data;
+  if (Array.isArray(data)) return data.map((row: any) => sanitizeWriteData(table, row));
+  const out: any = { ...data };
+  if (table === 'user_session') {
+    for (const col of PROTECTED_LICENSE_COLUMNS) delete out[col];
+  }
+  if (table === 'settings' && typeof out.key === 'string') {
+    if (PROTECTED_SETTINGS_KEYS.has(out.key)) return null;
+  }
+  return out;
+}
+
+// Detecta escrituras sobre claves protegidas de `settings`, tanto si la clave viaja
+// en el payload (insert/update) como si se selecciona por filtro (update/delete por WHERE).
+function isProtectedSettingsWrite(table: string, data: any, filters?: Filter[]): boolean {
+  if (table !== 'settings') return false;
+  const rows = Array.isArray(data) ? data : [data];
+  const keys: string[] = [];
+  for (const row of rows) {
+    if (row && typeof row.key === 'string') keys.push(row.key);
+  }
+  for (const f of filters || []) {
+    if (f.op === 'eq' && f.column === 'key' && typeof f.value === 'string') keys.push(f.value);
+  }
+  return keys.some((k) => PROTECTED_SETTINGS_KEYS.has(k));
 }
 
 
@@ -519,7 +691,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         }
         const role = getRequestRole(request);
         if (role === null) {
-          return reply.code(403).send({ data: null, error: { message: 'Rol no válido', code: 'ROLE_FORBIDDEN' } });
+          return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
         }
         if (!roleAllowed(q.table, q.method, role)) {
           return reply.code(403).send({
@@ -527,10 +699,25 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
             error: { message: 'Tu rol no tiene permiso para modificar este dato.', code: 'ROLE_FORBIDDEN' },
           });
         }
+        const sanitized = sanitizeWriteData(q.table, q.data);
+        // Los deletes no llevan data (null): el guard solo aplica a insert/update de
+        // configuraciones protegidas. Sin esta exención, TODO borrado devolvía FORBIDDEN_SETTING.
+        if (q.method !== 'delete' && sanitized === null) {
+          return reply.code(403).send({
+            data: null,
+            error: { message: 'No se permite modificar esta configuración por esta vía.', code: 'FORBIDDEN_SETTING' },
+          });
+        }
+        if (isProtectedSettingsWrite(q.table, q.data, q.filters)) {
+          return reply.code(403).send({
+            data: null,
+            error: { message: 'No se permite modificar esta configuración por esta vía.', code: 'FORBIDDEN_SETTING' },
+          });
+        }
         const res = writeRows({
           table: q.table,
           method: q.method,
-          data: q.data,
+          data: sanitized,
           filters: q.filters || [],
           onConflict: q.onConflict,
         });
@@ -546,15 +733,74 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     }
   });
 
+  // ---------- API: query en lote (transaccional) ----------
+  // Ejecuta varias escrituras dentro de UNA transacción SQLite: si alguna falla,
+  // se revierte todo (rollback). Se usa en los flujos críticos (venta, movimiento,
+  // nómina) para no dejar estados inconsistentes (venta sin stock, stock sin venta).
+  app.post('/api/query/batch', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    const body = (request.body || {}) as { commands?: QueryCommand[] };
+    const commands = Array.isArray(body.commands) ? body.commands : [];
+    if (commands.length === 0) {
+      return reply.code(400).send({ data: null, error: { message: 'Faltan comandos' } });
+    }
+    if (isWriteBlockedByLicense() && commands.some(c => !LICENSE_WHITELIST_TABLES.has(c.table))) {
+      return reply.code(403).send({
+        data: null,
+        error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' },
+      });
+    }
+    const role = getRequestRole(request);
+    if (role === null) {
+      return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+    }
+    // Validar permisos y sanear cada comando antes de ejecutar la transacción.
+    const sanitizedCommands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: Filter[]; onConflict?: string }[] = [];
+    for (const c of commands) {
+      const writeMethod = c.method as 'insert' | 'upsert' | 'update' | 'delete';
+      if (!['insert', 'upsert', 'update', 'delete'].includes(c.method)) {
+        return reply.code(400).send({ data: null, error: { message: 'Comando inválido' } });
+      }
+      if (!roleAllowed(c.table, writeMethod, role)) {
+        return reply.code(403).send({
+          data: null,
+          error: { message: `Tu rol no tiene permiso para modificar ${c.table}.`, code: 'ROLE_FORBIDDEN' },
+        });
+      }
+      const sanitized = sanitizeWriteData(c.table, c.data);
+      if (c.method !== 'delete' && sanitized === null) {
+        return reply.code(403).send({
+          data: null,
+          error: { message: 'No se permite modificar esta configuración por esta vía.', code: 'FORBIDDEN_SETTING' },
+        });
+      }
+      if (isProtectedSettingsWrite(c.table, c.data, c.filters)) {
+        return reply.code(403).send({
+          data: null,
+          error: { message: 'No se permite modificar esta configuración por esta vía.', code: 'FORBIDDEN_SETTING' },
+        });
+      }
+      sanitizedCommands.push({ table: c.table, method: writeMethod, data: sanitized, filters: c.filters, onConflict: c.onConflict });
+    }
+    try {
+      const res = runBatchWrite(sanitizedCommands);
+      if (res.error) return { data: null, error: res.error };
+      return { data: { success: true }, error: null };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'Error interno' } });
+    }
+  });
+
   // ---------- API: RPC (verify_access_pin local) ----------
   app.post('/api/rpc', async (request, reply) => {
     if (!requireToken(request, reply)) return;
     const { fn, args } = request.body as { fn: string; args: any };
     if (fn === 'verify_access_pin') {
+      if (isRateLimited(request)) return rateLimitReply(reply);
       const pin = String(args?.p_pin || '');
       const modulePath = String(args?.p_module_path || '');
       const pins = queryRaw<any>('SELECT * FROM access_pins WHERE is_active = 1');
-      const required = ROLE_MODULES[modulePath] || [];
+      const moduleKey = MODULE_BY_PATH[modulePath]; // undefined => sin exigencia de módulo
       const target = pins.find((p: any) => verifyPinHash(pin, p.pin_hash));
       if (!target) {
         const first = pins[0];
@@ -579,14 +825,91 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         const remaining = Math.ceil((new Date(target.blocked_until).getTime() - Date.now()) / 1000);
         return { data: { success: false, error: `PIN bloqueado. Intente de nuevo en ${formatBlockRemaining(remaining)}.`, blocked: true, remaining_seconds: remaining }, error: null };
       }
-      if (required.length && !required.includes(target.role)) {
+      const modules = getRoleModules(target.role);
+      if (moduleKey && !modules.includes(moduleKey)) {
         return { data: { success: false, error: 'Tu PIN no tiene acceso a este módulo' }, error: null };
       }
       runRaw('UPDATE access_pins SET failed_attempts = 0, blocked_until = NULL WHERE id = ?', [target.id]);
       if (!String(target.pin_hash).startsWith('scrypt$')) {
         runRaw('UPDATE access_pins SET pin_hash = ? WHERE id = ?', [hashPinScrypt(pin), target.id]);
       }
-      return { data: { success: true, role: target.role, pin_name: target.pin_name }, error: null };
+      setActiveRole(target.role);
+      return { data: { success: true, role: target.role, role_name: getRoleName(target.role), modules, pin_name: target.pin_name }, error: null };
+    }
+    if (fn === 'save_access_pin') {
+      // Crea o actualiza un PIN y (si se indica) un Rol reutilizable. El PIN se
+      // hashea con scrypt EN EL SERVIDOR: el cliente jamás guarda el hash.
+      // Solo el dueño (rol verificado) puede gestionar PINs.
+      const callerRole = getRequestRole(request);
+      if (callerRole !== 'owner') {
+        return { data: { success: false, error: 'Solo el dueño puede gestionar los PINs' }, error: null };
+      }
+      const roleId = args?.roleId ? String(args.roleId) : null;
+      const roleName = String(args?.roleName || '').trim();
+      const rawModules = Array.isArray(args?.modules) ? args.modules.map(String) : [];
+      const isOwnerRole = roleId === 'owner';
+      // Configuración está reservado al Dueño/a; el Dueño/a siempre tiene todos los módulos.
+      const modules = isOwnerRole ? getRoleModules('owner') : rawModules.filter((m: string) => m !== 'settings');
+      const pin = String(args?.pin || '');
+      const name = String(args?.name || '').trim();
+      let pinId = args?.pinId ? String(args.pinId) : null;
+      if (!/^\d{4}$/.test(pin)) {
+        return { data: { success: false, error: 'El PIN debe tener exactamente 4 dígitos' }, error: null };
+      }
+      if (!name) {
+        return { data: { success: false, error: 'El nombre es obligatorio' }, error: null };
+      }
+      let finalRole = roleId;
+      let isNewRole = false;
+      if (!finalRole) {
+        // Crear nuevo rol reutilizable
+        if (!roleName) {
+          return { data: { success: false, error: 'El nombre del rol es obligatorio' }, error: null };
+        }
+        if (modules.length === 0) {
+          return { data: { success: false, error: 'Seleccione al menos un módulo' }, error: null };
+        }
+        finalRole = crypto.randomUUID();
+        isNewRole = true;
+      } else if (!roleExists(finalRole)) {
+        return { data: { success: false, error: 'El rol seleccionado no existe' }, error: null };
+      }
+      // Si se crea/edita el dueño, se reutiliza el PIN del dueño existente.
+      if (finalRole === 'owner' && !pinId) {
+        const ownerPin = getRaw<any>('SELECT id FROM access_pins WHERE role = ? AND is_active = 1 ORDER BY created_at LIMIT 1', ['owner']);
+        pinId = ownerPin?.id || null;
+      }
+      // Un mismo PIN no puede estar asignado a dos usuarios activos.
+      // Los hashes tienen salt, así que se verifica contra cada PIN existente.
+      const duplicate = queryRaw<any>('SELECT id, pin_hash FROM access_pins WHERE is_active = 1')
+        .find((p: any) => p.id !== pinId && verifyPinHash(pin, p.pin_hash));
+      if (duplicate) {
+        return { data: { success: false, error: 'Ese PIN ya está en uso por otro usuario. Elija un PIN diferente.' }, error: null };
+      }
+      // Las escrituras solo ocurren después de todas las validaciones,
+      // para no dejar roles huérfanos si algo se rechaza.
+      if (isNewRole) {
+        const now = new Date().toISOString();
+        runRaw(
+          `INSERT INTO roles (id, user_id, name, modules, is_active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
+          [finalRole, 'owner', roleName, JSON.stringify([...new Set(modules)]), now, now]
+        );
+      }
+      // Si se editó un rol existente, actualizar sus módulos (propaga a todos los PINs).
+      if (finalRole !== 'owner' && modules.length > 0) {
+        runRaw('UPDATE roles SET modules = ?, updated_at = ? WHERE id = ?', [JSON.stringify([...new Set(modules)]), new Date().toISOString(), finalRole]);
+      }
+      if (pinId) {
+        runRaw('UPDATE access_pins SET pin_hash = ?, role = ?, pin_name = ?, is_active = 1, failed_attempts = 0, blocked_until = NULL WHERE id = ?', [hashPinScrypt(pin), finalRole, name, pinId]);
+      } else {
+        runRaw(
+          `INSERT INTO access_pins (id, user_id, pin_hash, role, pin_name, is_active, failed_attempts, blocked_until, created_at)
+           VALUES (?, ?, ?, ?, ?, 1, 0, NULL, ?)`,
+          [crypto.randomUUID(), 'owner', hashPinScrypt(pin), finalRole, name, new Date().toISOString()]
+        );
+      }
+      return { data: { success: true }, error: null };
     }
     if (fn === 'get_public_stats') {
       const count = (t: string) => {
@@ -619,6 +942,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     try {
       const safePath = path.normalize(filePath).replace(/^(\.\.[\\/])+/, '');
       const full = path.join(documentsDir, safePath);
+      if (!full.startsWith(documentsDir)) {
+        return reply.code(400).send({ error: { message: 'Ruta no válida' } });
+      }
       fs.mkdirSync(path.dirname(full), { recursive: true });
       const buf = Buffer.from(base64, 'base64');
       fs.writeFileSync(full, buf);
@@ -633,6 +959,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     try {
       const safePath = path.normalize(filePath).replace(/^(\.\.[\\/])+/, '');
       const full = path.join(documentsDir, safePath);
+      if (!full.startsWith(documentsDir)) {
+        return reply.code(400).send({ error: { message: 'Ruta no válida' } });
+      }
       if (!fs.existsSync(full)) return reply.code(404).send({ error: { message: 'Archivo no encontrado' } });
       const buf = fs.readFileSync(full);
       const ext = path.extname(full).toLowerCase();
@@ -662,6 +991,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       try {
         const safePath = path.normalize(p).replace(/^(\.\.[\\/])+/, '');
         const full = path.join(documentsDir, safePath);
+        if (!full.startsWith(documentsDir)) continue;
         if (fs.existsSync(full)) fs.unlinkSync(full);
       } catch { /* ignore */ }
     }
@@ -694,9 +1024,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
          VALUES (?, ?, ?, 'owner', 'Dueño/a', 1, 0, NULL, ?)`,
          [crypto.randomUUID(), ownerId, hashPinScrypt(String(pin)), now]
       );
+      runRaw(
+        `INSERT INTO roles (id, user_id, name, modules, is_active, created_at, updated_at)
+         VALUES ('owner', ?, 'Dueño/a', '["sales","inventory","movements","transit","recipes","consumption","closings","charts","analysis","filtered","hr","settings"]', 1, ?, ?)`,
+        [ownerId, now, now]
+      );
       runRaw(`INSERT INTO categories (id, user_id, name, created_at) VALUES (?, ?, 'General', ?)`, [crypto.randomUUID(), ownerId, now]);
       runRaw(`INSERT INTO warehouses (id, user_id, name, is_main, created_at) VALUES (?, ?, 'Almacén', 1, ?)`, [crypto.randomUUID(), ownerId, now]);
     });
+    setActiveRole('owner');
     return { data: { success: true, token: getOrCreateToken() }, error: null };
   });
 
@@ -704,6 +1040,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     const { pin } = request.body as { pin?: string };
 
     if (!pin) return reply.code(400).send({ error: { message: 'Falta PIN' } });
+    if (isRateLimited(request)) return rateLimitReply(reply);
     const pins = queryRaw<any>('SELECT * FROM access_pins WHERE is_active = 1');
     const target = pins.find((p: any) => verifyPinHash(String(pin), p.pin_hash));
     if (!target) {
@@ -728,24 +1065,85 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (!String(target.pin_hash).startsWith('scrypt$')) {
       runRaw('UPDATE access_pins SET pin_hash = ? WHERE id = ?', [hashPinScrypt(String(pin)), target.id]);
     }
+    setActiveRole(target.role);
     const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
-    return { data: { success: true, session: serializeRow(session), pinRole: target.role, pinName: target.pin_name, token: getOrCreateToken() }, error: null };
+    return {
+      data: {
+        success: true,
+        session: serializeRow(session),
+        pinRole: target.role,
+        pinRoleName: getRoleName(target.role),
+        pinModules: getRoleModules(target.role),
+        pinName: target.pin_name,
+        token: getOrCreateToken(),
+      },
+      error: null,
+    };
   });
 
   app.get('/api/auth/session', async (request, reply) => {
     touchMaxSeenTime(new Date().toISOString());
     const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
-    // El token de escritura solo se entrega a quien ya lo posee o se conecta por loopback
-    // (la app de escritorio siempre usa 127.0.0.1). Un dispositivo LAN no puede leerlo.
-    const ip = String(request.ip || '');
+    // El token de escritura se entrega solo a requests de confianza:
+    //  - el renderer real (misma app: sin header Origin en same-origin GET), o
+    //  - quien ya presenta el token (validación/renovación), o
+    //  - un origin loopback/LAN permitido (tablets/celulares del negocio).
+    // Un atacante por DNS rebinding envía Origin: http://attacker.com → rechazado.
+    const origin = String(request.headers?.['origin'] || '');
     const provided = String(request.headers?.['x-inventarioy-token'] || '');
     const canGetToken =
-      ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'localhost' ||
+      origin === '' ||                                    // same-origin real (la app)
+      isAllowedOrigin(origin) ||                           // loopback/LAN del negocio
       (provided !== '' && provided === getOrCreateToken());
-    return { data: { session: session ? serializeRow(session) : null, token: canGetToken ? getOrCreateToken() : null }, error: null };
+    return {
+      data: {
+        session: session ? serializeRow(session) : null,
+        token: canGetToken ? getOrCreateToken() : null,
+      },
+      error: null,
+    };
   });
 
-  app.post('/api/auth/logout', async () => ({ data: { success: true }, error: null }));
+  app.post('/api/auth/logout', async () => {
+    clearActiveRole();
+    return { data: { success: true }, error: null };
+  });
+
+  // Restablece el PIN del dueño con una clave firmada por el vendedor.
+  // NO requiere token de sesión: es el flujo de recuperación cuando nadie puede entrar.
+  // La clave es de un solo uso (verificado por hash SHA-256 en pin_reset_used),
+  // está ligada al Código de Negocio y vence a las 24 h.
+  app.post('/api/auth/reset-pin', async (request, reply) => {
+    const { code, resetKey, newPin } = request.body as { code?: string; resetKey?: string; newPin?: string };
+    if (!code || !resetKey || !newPin) {
+      return reply.code(400).send({ data: null, error: { message: 'Faltan datos' } });
+    }
+    if (!/^\d{4}$/.test(String(newPin))) {
+      return reply.code(400).send({ data: null, error: { message: 'El PIN debe tener exactamente 4 dígitos' } });
+    }
+    const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
+    if (!session) {
+      return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
+    }
+    const verified = verifyPinResetKey(String(resetKey), String(code));
+    if (!verified.ok) {
+      return reply.code(400).send({ data: null, error: { message: verified.error || 'Clave inválida' } });
+    }
+    const keyHash = createHash('sha256').update(String(resetKey).replace(/\s/g, '')).digest('hex');
+    const alreadyUsed = getRaw<any>('SELECT key_hash FROM pin_reset_used WHERE key_hash = ?', [keyHash]);
+    if (alreadyUsed) {
+      return reply.code(400).send({ data: null, error: { message: 'Esta clave ya fue usada. Solicite una nueva al vendedor' } });
+    }
+    const now = new Date().toISOString();
+    transaction(() => {
+      runRaw(
+        `UPDATE access_pins SET pin_hash = ?, failed_attempts = 0, blocked_until = NULL WHERE role = 'owner'`,
+        [hashPinScrypt(String(newPin))]
+      );
+      runRaw('INSERT INTO pin_reset_used (key_hash, used_at) VALUES (?, ?)', [keyHash, now]);
+    });
+    return { data: { success: true }, error: null };
+  });
 
   // ---------- API: licencia desktop (trial + clave de activación) ----------
   app.get('/api/license/status', async () => {
@@ -777,11 +1175,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (!requireToken(request, reply)) return;
     const { key } = request.body as { key?: string };
     if (!key || !String(key).trim()) {
-      return reply.code(400).send({ data: null, error: { message: 'Ingresá la clave de activación' } });
+      return reply.code(400).send({ data: null, error: { message: 'Ingrese la clave de activación' } });
     }
     const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
     if (!session) {
-      return reply.code(400).send({ data: null, error: { message: 'Primero configurá el negocio' } });
+      return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
     }
     const expectedCode = session.business_code || '';
     const result = verifyLicenseKey(String(key), expectedCode);
@@ -876,7 +1274,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Reiniciar el trial de 7 días (sin borrar datos del negocio).
       const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
       if (!session) {
-        return reply.code(400).send({ data: null, error: { message: 'Primero configurá el negocio' } });
+        return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
       }
       runRaw(
         `UPDATE user_session SET license_key = NULL, license_valid_until = NULL, license_activated_at = NULL, trial_started_at = ? WHERE id = 'owner'`,
@@ -891,7 +1289,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Forzar estado vencido: vencimiento en el pasado + retroceso de reloj.
       const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
       if (!session) {
-        return reply.code(400).send({ data: null, error: { message: 'Primero configurá el negocio' } });
+        return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
       }
       const past = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
       runRaw(
@@ -913,7 +1311,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Genera y aplica una clave como la haría el endpoint de activación real.
       const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
       if (!session) {
-        return reply.code(400).send({ data: null, error: { message: 'Primero configurá el negocio' } });
+        return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
       }
       const code = String(body.code || session.business_code || '').trim().toUpperCase();
       if (!code) {
@@ -957,11 +1355,42 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     return reply.code(400).send({ data: null, error: { message: 'Acción inválida' } });
   });
 
+  // Genera una clave de restablecimiento de PIN (válida 24 h, un solo uso).
+  // Solo disponible en la máquina del vendedor (donde existe la clave PRIVADA).
+  app.post('/api/pins/reset-key', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    const privPem = getPrivateKey();
+    if (!privPem) {
+      return reply.code(403).send({
+        data: null,
+        error: { message: 'Herramienta solo disponible en la máquina del vendedor', code: 'DEV_TOOLS_UNAVAILABLE' },
+      });
+    }
+    const body = (request.body || {}) as { code?: string };
+    const code = String(body.code || '').trim().toUpperCase();
+    if (!code) {
+      return reply.code(400).send({ data: null, error: { message: 'Falta el código de negocio' } });
+    }
+    const result = generatePinResetKey(code, privPem);
+    return {
+      data: {
+        key: result.key,
+        formattedKey: formatLicenseKey(result.key),
+        code,
+        expiresAt: result.expiresAt,
+      },
+      error: null,
+    };
+  });
+
   // ---------- API: settings (ZELLE y demás) ----------
   app.post('/api/settings', async (request, reply) => {
     if (!requireToken(request, reply)) return;
     const { key, value } = request.body as { key: string; value: any };
     if (!key) return reply.code(400).send({ error: { message: 'Falta key' } });
+    if (PROTECTED_SETTINGS_KEYS.has(key)) {
+      return reply.code(403).send({ data: null, error: { message: 'No se permite modificar esta configuración por esta vía.', code: 'FORBIDDEN_SETTING' } });
+    }
     runRaw(
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
@@ -973,7 +1402,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   app.get('/api/settings', async () => {
     const rows = queryRaw<any>('SELECT key, value FROM settings');
     const out: Record<string, any> = {};
+    // Claves que jamás se devuelven al cliente por GET (secretos / estado de licencia).
+    const hiddenKeys = new Set([AUTH_TOKEN_KEY, LICENSE_MAX_SEEN_KEY]);
     for (const r of rows) {
+      if (hiddenKeys.has(r.key)) continue;
       try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
     }
     return { data: out, error: null };

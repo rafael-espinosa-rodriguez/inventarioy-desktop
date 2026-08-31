@@ -4,7 +4,7 @@ import { TrendingUp, DollarSign, Package, AlertTriangle, ArrowUpRight, ArrowDown
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { exportToExcel } from '../../lib/utils';
+import { exportToExcel, isActive } from '../../lib/utils';
 import { formatNumber, formatQuantity } from '../../lib/formatNumber';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
 import { useCountUp } from '../../lib/animations/useCountUp';
@@ -29,7 +29,7 @@ export default function AnalysisView() {
   const isDataLoaded = !isLoading && Array.isArray(products);
   
   const activeProducts = useMemo(() => 
-    isDataLoaded ? products.filter(p => p.is_active !== false) : [],
+    isDataLoaded ? products.filter(isActive) : [],
     [isDataLoaded, products]
   );
   
@@ -108,13 +108,19 @@ export default function AnalysisView() {
     const fromDate = new Date(auditDateFrom + 'T00:00:00');
     const toDate = new Date(auditDateTo + 'T23:59:59');
 
-    // Cómo afecta cada movimiento al stock real (mismo criterio que dbStore.addMovement)
+    // Cómo afecta cada movimiento al stock real (mismo criterio que dbStore.fetchAll):
+    // ENTRADA/AJUSTE siempre suman; SALIDA/MERMA restan solo si tienen warehouse_id,
+    // porque las ventas/consumos desde tránsito (sin warehouse_id) no descontaron el almacén.
     const isSale = (m: Movement) => m.reason?.startsWith('Venta #') || m.reason === 'Venta de producto/ingrediente';
     const isConsumption = (m: Movement) => m.type === 'SALIDA' && (m.is_consumo_directo === true || m.is_gasto_variable === true);
-    const delta = (m: Movement) => (m.type === 'ENTRADA' || m.type === 'AJUSTE' ? Number(m.quantity) : -Number(m.quantity));
+    const delta = (m: Movement) => {
+      if (m.type === 'ENTRADA' || m.type === 'AJUSTE') return Number(m.quantity);
+      if (m.type === 'SALIDA' || m.type === 'MERMA') return (m as any).warehouse_id ? -Number(m.quantity) : 0;
+      return 0;
+    };
 
     // Stock real del período: anclar al stock ACTUAL del producto y restar el efecto
-    // de todos los movimientos posteriores al inicio del rango (incluye ventas/consumos).
+    // de todos los movimientos posteriores al inicio del rango (solo los que tocan el almacén).
     const movementsAfterStart = movements.filter(m => m.product_id === auditProduct && new Date(m.date) > fromDate);
     const stockInicial = Number(product.quantity) - movementsAfterStart.reduce((sum, m) => sum + delta(m), 0);
 
@@ -128,7 +134,7 @@ export default function AnalysisView() {
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
     const salidas = filteredMovements
-      .filter(m => m.type === 'SALIDA' && !isSale(m) && !isConsumption(m))
+      .filter(m => m.type === 'SALIDA' && !isSale(m) && !isConsumption(m) && (m as any).warehouse_id)
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
     const ventas = filteredMovements
@@ -147,8 +153,9 @@ export default function AnalysisView() {
       .filter(m => m.type === 'AJUSTE')
       .reduce((sum, m) => sum + Number(m.quantity), 0);
 
-    // Reconciliación con el inventario real: stock inicial + todo lo que entra/sale en el rango
-    const stockFinal = stockInicial + entradas - salidas - ventas - consumo - merma + ajustes;
+    // Reconciliación con el inventario real: stock inicial + lo que entra/sale del almacén
+    // en el rango (las ventas/consumos desde tránsito no descontaron quantity).
+    const stockFinal = stockInicial + entradas - salidas - merma + ajustes;
 
     // Balance de cada movimiento (stock justo después de él), anclado al stock actual,
     // para la columna "Saldo" de la tabla (mismo recorrido inverso que el Kárdex).

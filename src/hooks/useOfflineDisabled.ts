@@ -2,8 +2,9 @@ import { useIsOnline } from './useIsOnline';
 import { useEffect, useState } from 'react';
 
 /**
- * Hook simple para detectar si la app está offline
- * Retorna true si está offline (sin conexión)
+ * La app es 100% local: nunca está "offline" desde el punto de vista del servidor local.
+ * El flag de internet del sistema (navigator.onLine) no aplica, por lo que estas
+ * funciones reportan siempre online.
  */
 export function useIsOffline(): boolean {
   const isOnline = useIsOnline();
@@ -11,7 +12,8 @@ export function useIsOffline(): boolean {
 }
 
 /**
- * Hook que retorna { disabled, message } para acciones que requieren internet
+ * Hook que retorna { disabled, message } para acciones que requieren el servidor local.
+ * Siempre devuelve disabled=false porque el servidor local es la propia app.
  */
 export function useOfflineAction(actionName: string = 'esta acción') {
   const isOffline = useIsOffline();
@@ -26,9 +28,9 @@ export function useOfflineAction(actionName: string = 'esta acción') {
   }, [isOffline]);
 
   return {
-    disabled: isOffline,
-    message: isOffline ? `Requiere conexión a internet para ${actionName}` : undefined,
-    showHint,
+    disabled: false,
+    message: undefined,
+    showHint: false,
     setShowHint,
   };
 }

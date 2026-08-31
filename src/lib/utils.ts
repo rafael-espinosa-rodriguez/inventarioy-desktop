@@ -87,6 +87,10 @@ export function exportToCSV(columns: ExportColumn[], data: any[], filename: stri
       if (needsQuoting) {
         result = `"${result}"`;
       }
+      // Prevenir CSV injection: prefijos peligrosos se neutralizan con comilla simple
+      if (/^[=+\-@\t\r]/.test(result)) {
+        result = `'${result}`;
+      }
       return result;
     })
   );
@@ -112,6 +116,12 @@ export function calculateMargin(cost: number, price: number): number {
 
 export function normalizeStr(str: string): string {
   return str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+// Determina si un producto está activo. El servidor (node:sqlite) devuelve
+// is_active como INTEGER 0/1, por lo que hay que aceptar ambos: booleano y número.
+export function isActive(p: { is_active?: boolean | number | null } | null | undefined): boolean {
+  return p?.is_active === true || p?.is_active === 1;
 }
 
 export function esVitalicia(validUntil?: string | null): boolean {

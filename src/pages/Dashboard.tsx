@@ -22,12 +22,11 @@ import {
   FileText,
   LockOpen,
   Crown,
-  AlertTriangle,
   WifiOff,
   KeyRound
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
-import { useDatabaseStore, MODULE_ROLES } from '../store/dbStore';
+import { useDatabaseStore, MODULE_BY_PATH, getRoleModules, getRoleLabel } from '../store/dbStore';
 import { useIsOnline } from '../hooks/useIsOnline';
 import InventarioYLogo from '../components/InventarioYLogo';
 import LicenseBanner from '../components/LicenseBanner';
@@ -50,13 +49,10 @@ const LicenseView = lazy(() => import('./dashboard/LicenseView'));
 const ActionLogsView = lazy(() => import('./dashboard/ActionLogsView'));
 const DailyClosingsView = lazy(() => import('./dashboard/DailyClosingsView'));
 import { TableSkeleton } from '../components/Skeleton';
-import { syncEngine } from '../lib/syncEngine';
 
 export default function Dashboard() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [logoutPendingCount, setLogoutPendingCount] = useState(0);
   const sidebarTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasCheckedUncontacted = useRef(false);
   const fetchedUserId = useRef<string | null>(null);
@@ -64,7 +60,7 @@ export default function Dashboard() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout, isLoading: authLoading, initialize } = useAuthStore();
-  const { fetchAll, isLoading: dbLoading, accessPins, verifiedRole, clearVerifiedRole, verifyPinSimple } = useDatabaseStore();
+  const { fetchAll, isLoading: dbLoading, accessPins, roles, verifiedRole, clearVerifiedRole, verifyPinSimple } = useDatabaseStore();
   const isOnline = useIsOnline();
   const [localVerifiedRole, setLocalVerifiedRole] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
@@ -115,6 +111,18 @@ export default function Dashboard() {
     return [...baseNav, ...devItems];
   }, [baseNav, user?.license?.isDeveloper]);
 
+  // Oculta los módulos a los que el rol verificado no tiene acceso.
+  const visibleNav = useMemo(() => {
+    const mods = verifiedRole ? getRoleModules(verifiedRole) : null;
+    if (!mods) return navigation;
+    return navigation.filter(item => {
+      if (item.href === '/dashboard') return true;
+      const mk = MODULE_BY_PATH[item.href.replace('/dashboard', '') || '/'];
+      if (!mk) return true;
+      return mods.includes(mk);
+    });
+  }, [navigation, verifiedRole, roles]);
+
   // Detectar acceso por PIN y cargar datos del negocio
   useEffect(() => {
     const tempAccess = localStorage.getItem('temp_access');
@@ -133,7 +141,7 @@ export default function Dashboard() {
           }
         }
       } catch (e) {
-        console.error('Error parsing temp_access:', e);
+        if (import.meta.env.DEV) console.error('Error parsing temp_access:', e);
       }
     }
   }, []);
@@ -148,10 +156,9 @@ export default function Dashboard() {
       fetchedUserId.current = user.id;
       (async () => {
         try {
-          await syncEngine.processPending();
           await fetchAll();
         } catch (err) {
-          console.error('[Dashboard] Error en inicialización:', err);
+          if (import.meta.env.DEV) console.error('[Dashboard] Error en inicialización:', err);
         }
       })();
     }
@@ -176,9 +183,10 @@ export default function Dashboard() {
   useEffect(() => {
     const currentPath = location.pathname.replace('/dashboard', '') || '/';
     if (currentPath === '/') return;
-    
-    const requiredRoles = MODULE_ROLES[currentPath];
-    if (!requiredRoles || requiredRoles.length === 0) {
+
+    const moduleKey = MODULE_BY_PATH[currentPath];
+    // Rutas sin módulo mapeado: permitidas (shell del dashboard).
+    if (!moduleKey) {
       setModuleAllowed(prev => ({ ...prev, [currentPath]: true }));
       return;
     }
@@ -186,32 +194,29 @@ export default function Dashboard() {
     const anyPinExists = accessPins && accessPins.length > 0;
     const hasOwnerPin = accessPins?.some(p => p.role === 'owner');
     const isSettingsWithoutOwnerPin = currentPath === '/settings' && !hasOwnerPin;
-    
+
     if (!anyPinExists || isSettingsWithoutOwnerPin) {
       setModuleAllowed(prev => ({ ...prev, [currentPath]: true }));
       return;
     }
 
-    if (verifiedRole && requiredRoles.includes(verifiedRole)) {
+    // ¿El rol verificado (PIN) tiene acceso a este módulo?
+    if (verifiedRole && getRoleModules(verifiedRole).includes(moduleKey)) {
       setModuleAllowed(prev => ({ ...prev, [currentPath]: true }));
       return;
     }
 
-    // Si hay un rol verificado (del PIN), verificar solo ese rol
+    // ¿Algún PIN activo tiene el módulo? (para forzar verificación por PIN)
+    const matchingPin = accessPins.find(p => p.is_active && getRoleModules(p.role).includes(moduleKey));
     if (verifiedRole) {
-      if (requiredRoles.includes(verifiedRole)) {
-        setModuleAllowed(prev => ({ ...prev, [currentPath]: true }));
-      } else {
-        setModuleAllowed(prev => ({ ...prev, [currentPath]: false }));
-        setPendingModule(currentPath);
-        setShowPinModal(true);
-      }
+      // Rol verificado pero sin acceso a este módulo.
+      setModuleAllowed(prev => ({ ...prev, [currentPath]: false }));
+      setPendingModule(currentPath);
+      setShowPinModal(true);
       return;
     }
 
-    // Solo si no hay rol verificado, buscar pines (para usuarios dueñologueados)
-    const userPin = accessPins.find(p => p.is_active && requiredRoles.includes(p.role));
-    if (!userPin) {
+    if (!matchingPin) {
       setModuleAllowed(prev => ({ ...prev, [currentPath]: false }));
       setPendingModule(currentPath);
       setShowPinModal(true);
@@ -246,20 +251,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const unsub = syncEngine.onEvent((event: string, data: any) => {
-      if (event === 'synced') {
-        toast.success(`${data.count} cambio${data.count !== 1 ? 's' : ''} sincronizado${data.count !== 1 ? 's' : ''}`);
-      }
-      if (event === 'duplicate') {
-        toast.info('Un producto duplicado fue ignorado durante la sincronización');
-      }
-    });
-    return () => { unsub(); };
-  }, []);
-
-  useEffect(() => {
     const handleOnline = async () => {
-      await syncEngine.processQueue();
       fetchAll().catch(() => {});
     };
     window.addEventListener('online', handleOnline);
@@ -306,15 +298,6 @@ export default function Dashboard() {
       setIsPinAccess(false);
       navigate('/acceso');
     } else {
-      try {
-        const { getSyncQueueCount } = await import('../lib/dexieDb');
-        const count = await getSyncQueueCount();
-        if (count > 0) {
-          setLogoutPendingCount(count);
-          setShowLogoutConfirm(true);
-          return;
-        }
-      } catch { }
       await logout();
     }
   };
@@ -373,7 +356,7 @@ export default function Dashboard() {
 
         <div className="flex h-[calc(100vh-4rem)] flex-col justify-between overflow-y-auto p-4">
           <nav className="space-y-1">
-            {navigation.map((item) => {
+            {visibleNav.map((item) => {
               const isActive = location.pathname === item.href || (item.href === '/dashboard' && location.pathname === '/dashboard/');
               const isExclusive = item.name === 'Gestión de Usuarios';
               const isOfflineLimited = item.offlineLimited && !isOnline;
@@ -416,7 +399,7 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2">
                       <LockOpen className="h-4 w-4 text-warning" />
                       <span className="text-sm font-medium text-warning">
-                        Sesión: {verifiedRole === 'owner' ? 'Dueño/a' : verifiedRole === 'economist' ? 'Económico/a' : verifiedRole === 'admin' ? 'Administrador/a' : verifiedRole === 'supervisor' ? 'Supervisor/a' : 'Dependiente/a'}
+                        Sesión: {getRoleLabel(verifiedRole)}
                         {localVerifiedRoleName && <span className="text-warning/80"> - {localVerifiedRoleName}</span>}
                       </span>
                     </div>
@@ -538,39 +521,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {showLogoutConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-            <div className="w-full max-w-md rounded-xl bg-surface p-6 shadow-xl border border-border mx-4">
-              <div className="mb-4">
-                <h3 className="text-lg font-semibold text-text flex items-center gap-2 mb-2">
-                  <AlertTriangle className="h-5 w-5 text-warning" />
-                  Cambios sin sincronizar
-                </h3>
-                <p className="text-sm text-text-secondary">
-                  Tenés <strong className="text-warning">{logoutPendingCount}</strong> cambio{logoutPendingCount !== 1 ? 's' : ''} pendiente{logoutPendingCount !== 1 ? 's' : ''} de sincronización.
-                  Si cerrás sesión ahora, se perder{logoutPendingCount !== 1 ? 'án' : 'á'}.
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowLogoutConfirm(false)}
-                  className="flex-1 px-4 py-2 rounded-lg border border-border text-sm font-medium text-text hover:bg-surface-hover transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button
-                  onClick={async () => {
-                    setShowLogoutConfirm(false);
-                    await logout();
-                  }}
-                  className="flex-1 px-4 py-2 rounded-lg bg-danger text-sm font-medium text-white hover:bg-danger/90 transition-colors"
-                >
-                  Cerrar sesión igual
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

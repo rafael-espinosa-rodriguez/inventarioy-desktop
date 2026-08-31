@@ -95,6 +95,9 @@ function getCurrentRole(): string {
 
 let tokenPromise: Promise<string> | null = null;
 
+// El token de escritura se obtiene vía /api/auth/session (solo el renderer real o
+// un origin loopback/LAN permitido), o vía /api/auth/setup y /api/auth/login.
+// Un atacante por DNS rebinding envía un Origin ajeno y es rechazado por el servidor.
 async function fetchTokenFromServer(): Promise<string> {
   let res: Response;
   try {
@@ -341,6 +344,9 @@ const authApi = {
     if (res.error) return res;
     return { data: { session: null }, error: null };
   },
+  resetPin: async (args: { code: string; resetKey: string; newPin: string }): Promise<LocalResponse<{ success: boolean }>> => {
+    return postJson('/api/auth/reset-pin', args);
+  },
   refreshSession: async (): Promise<{ data: { session: any }; error: LocalError | null }> => {
     // No hay token remoto que refrescar en la versión desktop local:
     // getSession() ya devuelve la sesión local del servidor.
@@ -415,6 +421,16 @@ export const localDb = {
     if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
     return { data: parsed?.data ?? null, error: parsed?.error || null };
   },
+  pins: {
+    generateResetKey: async (code: string): Promise<LocalResponse<{
+      key: string;
+      formattedKey: string;
+      code: string;
+      expiresAt: string;
+    }>> => {
+      return postJson('/api/pins/reset-key', { code });
+    },
+  },
   license: {
     status: async (): Promise<LocalResponse<{
       status: 'trialing' | 'active' | 'expired';
@@ -457,6 +473,10 @@ export const localDb = {
     }>> => {
       return postJson('/api/license/simulate', args);
     },
+  },
+  // Ejecuta varias escrituras en una única transacción (rollback atómico).
+  batch: async (commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: LocalFilter[]; onConflict?: string }[]): Promise<LocalResponse<{ success: boolean }>> => {
+    return postJson('/api/query/batch', { commands });
   },
 };
 

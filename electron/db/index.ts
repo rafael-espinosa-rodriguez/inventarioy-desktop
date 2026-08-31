@@ -12,14 +12,95 @@ export function getDataDir(): string {
   return dataDir;
 }
 
+// Backup rotativo de la base de datos. Se ejecuta al arrancar la app para que
+// ante una corrupción o borrado accidental siempre exista una copia reciente.
+// Conserva hasta MAX_BACKUPS copias con nombre inventarioy-backup-<fecha>.db.
+const MAX_BACKUPS = 5;
+
+export function backupDatabase(): string | null {
+  if (!dataDir) return null;
+  const dbPath = path.join(dataDir, 'inventarioy.db');
+  if (!fs.existsSync(dbPath)) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const backupPath = path.join(dataDir, `inventarioy-backup-${stamp}.db`);
+  try {
+    // Backup consistente aunque la BD esté en WAL: checkpoint + copia física.
+    try { db?.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ok */ }
+    fs.copyFileSync(dbPath, backupPath);
+    // Rotación: borrar backups antiguos hasta dejar MAX_BACKUPS.
+    const backups = fs.readdirSync(dataDir)
+      .filter(f => /^inventarioy-backup-.*\.db$/.test(f))
+      .map(f => ({ f, t: fs.statSync(path.join(dataDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const b of backups.slice(MAX_BACKUPS)) {
+      try { fs.unlinkSync(path.join(dataDir, b.f)); } catch { /* ignore */ }
+    }
+    return backupPath;
+  } catch {
+    return null;
+  }
+}
+
 export function initDatabase(dir?: string): DatabaseSync {
   dataDir = dir || path.join(process.env.APPDATA || path.join(os.homedir(), '.inventarioy'), 'inventarioy-desktop');
   fs.mkdirSync(dataDir, { recursive: true });
   const dbPath = path.join(dataDir, 'inventarioy.db');
-  db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
+
+  const openDb = (): DatabaseSync => {
+    const d = new DatabaseSync(dbPath);
+    d.exec('PRAGMA journal_mode = WAL');
+    d.exec('PRAGMA foreign_keys = ON');
+    return d;
+  };
+
+  const verifyIntegrity = (d: DatabaseSync): boolean => {
+    try {
+      const integrity = d.prepare('PRAGMA integrity_check').get() as any;
+      const value = integrity && typeof integrity === 'object' ? integrity.integrity_check : integrity;
+      return value === 'ok';
+    } catch {
+      return false;
+    }
+  };
+
+  // Abrir y verificar integridad. Si la BD está corrupta, restaurar desde el
+  // backup más reciente antes de aplicar migraciones.
+  try {
+    db = openDb();
+    if (!verifyIntegrity(db)) {
+      console.error('[db] ⚠️ integrity_check falló. Intentando restaurar desde backup...');
+      db.close();
+      const backups = fs.readdirSync(dataDir)
+        .filter(f => /^inventarioy-backup-.*\.db$/.test(f))
+        .sort((a, b) => fs.statSync(path.join(dataDir, b)).mtimeMs - fs.statSync(path.join(dataDir, a)).mtimeMs);
+      if (backups.length > 0) {
+        fs.copyFileSync(path.join(dataDir, backups[0]), dbPath);
+        db = openDb();
+        console.log('[db] ✅ BD restaurada desde backup:', backups[0]);
+      } else {
+        throw new Error('Base de datos corrupta y sin copia de seguridad disponible');
+      }
+    }
+  } catch (e: any) {
+    if (e?.message?.includes('corrupta y sin copia')) throw e;
+    // Fallo al abrir (p. ej. "file is not a database"): intentar restaurar.
+    console.error('[db] Error abriendo la BD:', e?.message);
+    try { db?.close(); } catch { /* ignore */ }
+    const backups = fs.readdirSync(dataDir)
+      .filter(f => /^inventarioy-backup-.*\.db$/.test(f))
+      .sort((a, b) => fs.statSync(path.join(dataDir, b)).mtimeMs - fs.statSync(path.join(dataDir, a)).mtimeMs);
+    if (backups.length > 0) {
+      fs.copyFileSync(path.join(dataDir, backups[0]), dbPath);
+      db = openDb();
+      console.log('[db] ✅ BD restaurada desde backup:', backups[0]);
+    } else {
+      throw new Error('Base de datos corrupta y sin copia de seguridad disponible');
+    }
+  }
+
   applyMigrations(db);
+  // Copia de seguridad al arrancar (tras migraciones exitosas).
+  backupDatabase();
   return db;
 }
 
@@ -267,6 +348,22 @@ export function writeRows(q: WriteQuery): { data: any | any[] | null; error?: an
 
   if (q.method === 'delete') {
     const { where, params } = buildWhere(q.filters || []);
+    // El rol 'owner' y los roles con PINs asociados no pueden eliminarse
+    // (la UI lo impide; esto es defensa en profundidad).
+    if (table === 'roles') {
+      const targets = d
+        .prepare(`SELECT id, name FROM ${quote('roles')}${where ? ` WHERE ${where}` : ''}`)
+        .all(...params) as any[];
+      for (const t of targets) {
+        if (t.id === 'owner') {
+          return { data: null, error: { code: 'ROLE_PROTECTED', message: 'El rol de Dueño no se puede eliminar.' } };
+        }
+        const used = (d.prepare('SELECT COUNT(*) AS n FROM access_pins WHERE role = ?').get(t.id) as any)?.n ?? 0;
+        if (used > 0) {
+          return { data: null, error: { code: 'ROLE_IN_USE', message: 'No se puede eliminar un rol que tiene PINs asociados.' } };
+        }
+      }
+    }
     const sql = `DELETE FROM ${quote(table)}${where ? ` WHERE ${where}` : ''}`;
     d.prepare(sql).run(...params);
     return { data: null };
@@ -297,5 +394,27 @@ export function transaction<T>(fn: () => T): T {
   } catch (e) {
     d.exec('ROLLBACK');
     throw e;
+  }
+}
+
+// Ejecuta una lista de escrituras DENTRO de una única transacción SQLite.
+// Si cualquiera falla, se revierte todo (rollback) y se devuelve el error.
+// Cada comando sigue el mismo contrato que /api/query (métodos writeRows).
+export function runBatchWrite(
+  commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: Filter[]; onConflict?: string }[]
+): { data: any; error?: any } {
+  try {
+    const results = transaction(() => {
+      const out: any[] = [];
+      for (const c of commands) {
+        const r = writeRows({ table: c.table, method: c.method, data: c.data, filters: c.filters, onConflict: c.onConflict });
+        if (r.error) throw r.error;
+        out.push(r.data);
+      }
+      return out;
+    });
+    return { data: results };
+  } catch (e: any) {
+    return { data: null, error: { code: 'BATCH_FAILED', message: e?.message || 'Error en la transacción' } };
   }
 }

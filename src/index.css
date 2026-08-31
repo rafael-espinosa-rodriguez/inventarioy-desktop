@@ -338,3 +338,35 @@
     transform: scale(1);
   }
 }
+
+
+/* ── Impresión del Modelo SC4-06 (nómina) ─────────────────────────────── */
+@media print {
+  .print-sc406,
+  .print-sc406 * {
+    visibility: visible !important;
+  }
+  .print-sc406 {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    background: white !important;
+    color: #000 !important;
+    padding: 8mm !important;
+    font-size: 11px !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  .print-sc406 table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+  .print-sc406 th,
+  .print-sc406 td {
+    border: 1px solid #000 !important;
+    padding: 2px 4px !important;
+    color: #000 !important;
+    background: transparent !important;
+  }
+}

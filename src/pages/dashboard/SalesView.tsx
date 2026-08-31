@@ -4,12 +4,13 @@ import { useAuthStore } from '../../store/authStore';
 import { Plus, Minus, Trash2, ShoppingCart, CreditCard, Search, X, DollarSign, User, PlusCircle, Users, Loader2, Printer, AlertCircle, ChevronDown, Info } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { NumberInput } from '../../components/ui/NumberInput';
 import { toast } from 'sonner';
-import { validateNumber, getNumberFromString, exportToExcel } from '../../lib/utils';
+import { validateNumber, getNumberFromString, exportToExcel, isActive } from '../../lib/utils';
 import { isDateClosed } from '../../lib/dateUtils';
-import { syncEngine } from '../../lib/syncEngine';
 import { convertUnit, getCompatibleUnits, getUnitType, normalizeUnit, UNIT_LABELS, type UnitAbbrev } from '../../lib/unitConversion';
+import { formatNumber } from '../../lib/formatNumber';
 import TicketView from './TicketView';
 
 type PaymentField = 'efectivo' | 'transferencia' | 'usd' | 'eur';
@@ -38,12 +39,12 @@ function calculateFieldMax(
     field === 'usd' ? (usdEnabled ? usdRate : 0) :
     (eurEnabled ? eurRate : 0);
   if (rate <= 0) return 0;
-  return Math.round((remainingCUP / rate) * 100) / 100;
+  return Math.round((remainingCUP / rate) * 1e6) / 1e6;
 }
 
 function showPaymentClampWarning(raw: number, clamped: number) {
-  if (raw - clamped > 0.01) {
-    toast.warning(`Máximo permitido: $${clamped.toFixed(2)}`, { duration: 2000 });
+  if (raw - clamped > 0.000001) {
+    toast.warning(`Máximo permitido: $${formatNumber(clamped, 6)}`, { duration: 2000 });
   }
 }
 
@@ -63,11 +64,11 @@ function getUnitMin(unit: string | undefined, isRecipe?: boolean): number {
 
 export default function SalesView() {
   const { user } = useAuthStore();
-  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, addSale, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData, syncQueueCount, refreshSyncQueueCount } = useDatabaseStore();
+  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, addSale, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData } = useDatabaseStore();
   
-  const activeProducts = products.filter(p => p.is_active !== false);
+  const activeProducts = products.filter(isActive);
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
   const [closingDate, setClosingDate] = useState(today);
   const [searchTerm, setSearchTerm] = useState('');
   const [saleType, setSaleType] = useState<'SALON' | 'DOMICILIO' | 'BAR' | 'VENTA_RAPIDA'>('SALON');
@@ -88,57 +89,7 @@ export default function SalesView() {
   const [selectedPendingAccount, setSelectedPendingAccount] = useState<string>('');
   const [showNewPendingModal, setShowNewPendingModal] = useState(false);
   const [newPendingName, setNewPendingName] = useState('');
-  const [pendingSyncCount, setPendingSyncCount] = useState(0);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [showSaleDetails, setShowSaleDetails] = useState(false);
-
-  useEffect(() => {
-    setPendingSyncCount(syncQueueCount);
-  }, [syncQueueCount]);
-
-  useEffect(() => {
-    refreshSyncQueueCount();
-    const interval = setInterval(() => {
-      if (navigator.onLine) {
-        refreshSyncQueueCount();
-      }
-    }, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleManualSync = async () => {
-    setIsSyncing(true);
-    try {
-      if (navigator.onLine) {
-        let syncedCount = 0;
-        let hadError = false;
-        const unsub = syncEngine.onEvent((event) => {
-          if (event === 'synced') {
-            syncedCount = (event as any).count || 0;
-          }
-          if (event === 'error') {
-            hadError = true;
-          }
-        });
-        await syncEngine.processQueue();
-        unsub();
-        await refreshSyncQueueCount();
-        if (syncedCount > 0) {
-          toast.success(`${syncedCount} cambio(s) sincronizado(s)`);
-        } else if (hadError) {
-          toast.error('Algunos cambios no pudieron sincronizarse');
-        } else {
-          toast.info('No hay cambios pendientes');
-        }
-      } else {
-        toast.warning('No hay conexión a internet');
-      }
-    } catch (err) {
-      toast.error('Error al sincronizar');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
 
   const [salePaymentMethod, setSalePaymentMethod] = useState({
     efectivo: 0,
@@ -269,6 +220,7 @@ export default function SalesView() {
   const [showClosingWarning, setShowClosingWarning] = useState(false);
   const [closingWarningData, setClosingWarningData] = useState<{breakdown: number; expected: number} | null>(null);
   const [infoRecipe, setInfoRecipe] = useState<any>(null);
+  const [pendingCancelAccount, setPendingCancelAccount] = useState<any>(null);
 
   // Función helper para operaciones seguras que siempre limpian el estado
   const safeExecute = async (
@@ -288,7 +240,7 @@ export default function SalesView() {
         toast.error(result?.error || 'Error en la operación');
       }
     } catch (error: any) {
-      console.error('Error en operación:', error);
+      if (import.meta.env.DEV) console.error('Error en operación:', error);
                     toast.error('Error de conexión. Intente de nuevo.');
     } finally {
       setLoading(false);
@@ -703,17 +655,17 @@ export default function SalesView() {
 
     // Validar método de pago si no es cuenta casa
     if (!isAccountHouse) {
-      const roundedTotal = Math.round(total * 100) / 100;
+      const roundedTotal = Math.round(total * 1e6) / 1e6;
       const usdConverted = user?.usdEnabled ? salePaymentMethod.usd * (user?.usdRate || 0) : 0;
       const eurConverted = user?.eurEnabled ? salePaymentMethod.eur * (user?.eurRate || 0) : 0;
-      const totalPaid = Math.round((salePaymentMethod.efectivo + (user?.cupTransferEnabled ? salePaymentMethod.transferencia : 0) + usdConverted + eurConverted) * 100) / 100;
+      const totalPaid = Math.round((salePaymentMethod.efectivo + (user?.cupTransferEnabled ? salePaymentMethod.transferencia : 0) + usdConverted + eurConverted) * 1e6) / 1e6;
       
       if (totalPaid < roundedTotal) {
-        const missingAmount = Math.round((roundedTotal - totalPaid) * 100) / 100;
+        const missingAmount = Math.round((roundedTotal - totalPaid) * 1e6) / 1e6;
         if (totalPaid === 0) {
           setPaymentError('Debe especificar el desglose de pago para procesar la venta');
         } else {
-          setPaymentError(`Falta por pagar: $${missingAmount.toFixed(2)} CUP`);
+          setPaymentError(`Falta por pagar: $${formatNumber(missingAmount, 6)} CUP`);
         }
         setPaymentWarning(null);
         setIsProcessingSale(false);
@@ -722,8 +674,8 @@ export default function SalesView() {
       
       // Detectar sobrepago
       if (totalPaid > roundedTotal) {
-        const overpaidAmount = Math.round((totalPaid - roundedTotal) * 100) / 100;
-        setPaymentWarning(`Sobrepago: $${overpaidAmount.toFixed(2)} CUP de vuelto`);
+        const overpaidAmount = Math.round((totalPaid - roundedTotal) * 1e6) / 1e6;
+        setPaymentWarning(`Sobrepago: $${formatNumber(overpaidAmount, 6)} CUP de vuelto`);
       } else {
         setPaymentWarning(null);
       }
@@ -801,8 +753,7 @@ export default function SalesView() {
       setPaymentWarning(null);
       setSalePaymentMethod({ efectivo: 0, transferencia: 0, usd: 0, eur: 0 });
       
-      const successMessage = navigator.onLine ? 'Venta registrada exitosamente' : 'Venta guardada offline. Se sincronizará cuando haya conexión.';
-      toast.success(successMessage);
+      toast.success('Venta registrada exitosamente');
 
       // Intentamos registrar la acción pero no bloqueamos laUI
       try {
@@ -816,7 +767,7 @@ export default function SalesView() {
           is_account_house: isAccountHouse
         });
       } catch (logError) {
-        console.warn('Error logging action:', logError);
+        if (import.meta.env.DEV) console.warn('Error logging action:', logError);
       }
 
       // Generar ticket si está habilitado
@@ -871,18 +822,6 @@ setShowTicket(true);
 
   return (
     <>
-      {pendingSyncCount > 0 && (
-        <div className="mb-4 p-3 bg-warning/10 border border-warning/30 rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-warning">⚠️</span>
-            <span className="text-sm text-text">{pendingSyncCount} cambio(s) pendientes de sincronizar</span>
-          </div>
-          <Button size="sm" variant="outline" onClick={handleManualSync} disabled={isSyncing} className="gap-1">
-            <Loader2 className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
-            {isSyncing ? 'Sincronizando...' : 'Sincronizar'}
-          </Button>
-        </div>
-      )}
     <div className="flex h-[calc(100dvh-8rem)] flex-col gap-6 lg:flex-row">
       {/* Panel Izquierdo - Catálogo de Productos */}
       <div className="flex flex-1 flex-col rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
@@ -1543,7 +1482,7 @@ setShowTicket(true);
               <div className="mt-3 pt-2 border-t border-border/30 flex justify-between text-sm">
                 <span className="text-text-secondary">Total registrado:</span>
                 <span className="font-mono text-text">
-                  ${((Number(user?.usdEnabled ? salePaymentMethod.usd : 0) || 0) * (Number(user?.usdRate) || 0) + (Number(user?.eurEnabled ? salePaymentMethod.eur : 0) || 0) * (Number(user?.eurRate) || 0) + (Number(salePaymentMethod.efectivo) || 0) + (Number(user?.cupTransferEnabled ? salePaymentMethod.transferencia : 0) || 0)).toFixed(2)}
+                  ${formatNumber((Number(user?.usdEnabled ? salePaymentMethod.usd : 0) || 0) * (Number(user?.usdRate) || 0) + (Number(user?.eurEnabled ? salePaymentMethod.eur : 0) || 0) * (Number(user?.eurRate) || 0) + (Number(salePaymentMethod.efectivo) || 0) + (Number(user?.cupTransferEnabled ? salePaymentMethod.transferencia : 0) || 0), 6)}
                 </span>
               </div>
             </div>
@@ -1640,18 +1579,8 @@ setShowTicket(true);
                             size="sm"
                             variant="outline"
                             className="h-6 text-xs text-danger border-danger hover:bg-danger/10"
-                            onClick={async () => {
-                              if (confirm('¿Cancelar esta cuenta? No se descontará inventario.')) {
-                                const result = await useDatabaseStore.getState().deletePendingAccount(account.id);
-                                if (result.success) {
-                                  if (selectedPendingAccount === account.id) {
-                                    setSelectedPendingAccount('');
-                                  }
-                                  toast.success('Cuenta cancelada');
-                                } else {
-                                  toast.error(result.error || 'Error al cancelar');
-                                }
-                              }
+                            onClick={() => {
+                              setPendingCancelAccount(account);
                             }}
                           >
                             X
@@ -1997,7 +1926,7 @@ setShowTicket(true);
                       toast.error(result.error || 'Error al crear cuenta');
                     }
                   } catch (error: any) {
-                    console.error('Error:', error);
+                    if (import.meta.env.DEV) console.error('Error:', error);
       toast.error('Error de conexión. Intente de nuevo.');
                   } finally {
                     setIsCreatingPending(false);
@@ -2099,20 +2028,20 @@ setShowTicket(true);
               <div className="pt-2 border-t border-border">
                 <div className="flex justify-between text-sm">
                   <span className="text-text-secondary">Total registrado:</span>
-                  <span className="font-mono text-text">${((Number(user?.usdEnabled ? chargeBreakdown.usd : 0) || 0) * (Number(user?.usdRate) || 0) + (Number(user?.eurEnabled ? chargeBreakdown.eur : 0) || 0) * (Number(user?.eurRate) || 0) + (Number(chargeBreakdown.efectivo) || 0) + (Number(user?.cupTransferEnabled ? chargeBreakdown.transferencia : 0) || 0)).toFixed(2)}</span>
+                  <span className="font-mono text-text">${formatNumber((Number(user?.usdEnabled ? chargeBreakdown.usd : 0) || 0) * (Number(user?.usdRate) || 0) + (Number(user?.eurEnabled ? chargeBreakdown.eur : 0) || 0) * (Number(user?.eurRate) || 0) + (Number(chargeBreakdown.efectivo) || 0) + (Number(user?.cupTransferEnabled ? chargeBreakdown.transferencia : 0) || 0), 6)}</span>
                 </div>
                 {(() => {
                   const totalPaid = Math.round(((Number(user?.usdEnabled ? chargeBreakdown.usd : 0) || 0) * (Number(user?.usdRate) || 0)
                     + (Number(user?.eurEnabled ? chargeBreakdown.eur : 0) || 0) * (Number(user?.eurRate) || 0)
                     + (Number(chargeBreakdown.efectivo) || 0)
-                    + (Number(user?.cupTransferEnabled ? chargeBreakdown.transferencia : 0) || 0)) * 100) / 100;
-                  const accountTotal = Math.round((selectedAccountForCharge?.total_amount || 0) * 100) / 100;
-                  const excedente = Math.round((totalPaid - accountTotal) * 100) / 100;
-                  if (excedente > 0.01) {
+                    + (Number(user?.cupTransferEnabled ? chargeBreakdown.transferencia : 0) || 0)) * 1e6) / 1e6;
+                  const accountTotal = Math.round((selectedAccountForCharge?.total_amount || 0) * 1e6) / 1e6;
+                  const excedente = Math.round((totalPaid - accountTotal) * 1e6) / 1e6;
+                  if (excedente > 0.000001) {
                     return (
                       <p className="text-xs text-warning mt-2 flex items-start gap-1.5">
                         <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                        <span>Excedente de <span className="font-mono font-semibold">${excedente.toFixed(2)}</span>: se registrará como cambio/devuelta, no como venta.</span>
+                        <span>Excedente de <span className="font-mono font-semibold">${formatNumber(excedente, 6)}</span>: se registrará como cambio/devuelta, no como venta.</span>
                       </p>
                     );
                   }
@@ -2144,8 +2073,8 @@ setShowTicket(true);
                     const totalPaid = Math.round((chargeBreakdown.efectivo + 
                       (user?.cupTransferEnabled ? chargeBreakdown.transferencia : 0) + 
                       (user?.usdEnabled ? chargeBreakdown.usd * (user?.usdRate || 0) : 0) +
-                      (user?.eurEnabled ? chargeBreakdown.eur * (user?.eurRate || 0) : 0)) * 100) / 100;
-                    const accountTotal = Math.round((selectedAccountForCharge.total_amount || 0) * 100) / 100;
+                      (user?.eurEnabled ? chargeBreakdown.eur * (user?.eurRate || 0) : 0)) * 1e6) / 1e6;
+                    const accountTotal = Math.round((selectedAccountForCharge.total_amount || 0) * 1e6) / 1e6;
                     if (totalPaid < accountTotal) {
                       toast.error('El total pagado es menor al total de la cuenta');
                       setIsProcessingCharge(false);
@@ -2177,7 +2106,7 @@ setShowTicket(true);
                               is_account_house: isAccHouse
                             });
                           } catch (logErr) {
-                            console.warn('[logAction] Error (offline?):', logErr);
+                            if (import.meta.env.DEV) console.warn('[logAction] Error (offline?):', logErr);
                           }
                         }
                         setTicketData({
@@ -2202,7 +2131,7 @@ setShowTicket(true);
                         setSelectedPendingAccount('');
                         setChargeBreakdown({ efectivo: 0, transferencia: 0, usd: 0, eur: 0 });
                       } catch (successErr) {
-                        console.error('[SalesView] Error en flujo success:', successErr);
+                        if (import.meta.env.DEV) console.error('[SalesView] Error en flujo success:', successErr);
                         setSelectedAccountForCharge(null);
                         setSelectedPendingAccount('');
                         setChargeBreakdown({ efectivo: 0, transferencia: 0, usd: 0, eur: 0 });
@@ -2215,7 +2144,7 @@ setShowTicket(true);
                       setIsProcessingCharge(false);
                     }
                   } catch (err) {
-                    console.error('[SalesView] Error en cobro:', err);
+                    if (import.meta.env.DEV) console.error('[SalesView] Error en cobro:', err);
                     toast.error('Error al procesar el cobro');
                     setIsProcessingCharge(false);
                   }
@@ -2285,7 +2214,7 @@ setShowTicket(true);
                           justification: cancelJustification
                         });
                       } catch (logErr) {
-                        console.warn('[logAction] Error (offline?):', logErr);
+                        if (import.meta.env.DEV) console.warn('[logAction] Error (offline?):', logErr);
                       }
                     }
                     toast.success('Cuenta cancelada');
@@ -2431,6 +2360,28 @@ setShowTicket(true);
         </div>
       )}
     </div>
+
+    <ConfirmDialog
+      isOpen={!!pendingCancelAccount}
+      onClose={() => setPendingCancelAccount(null)}
+      title="Cancelar cuenta"
+      description="¿Cancelar esta cuenta? No se descontará inventario."
+      confirmLabel="Cancelar cuenta"
+      onConfirm={async () => {
+        const account = pendingCancelAccount;
+        setPendingCancelAccount(null);
+        if (!account) return;
+        const result = await useDatabaseStore.getState().deletePendingAccount(account.id);
+        if (result.success) {
+          if (selectedPendingAccount === account.id) {
+            setSelectedPendingAccount('');
+          }
+          toast.success('Cuenta cancelada');
+        } else {
+          toast.error(result.error || 'Error al cancelar');
+        }
+      }}
+    />
   </>
   );
 }

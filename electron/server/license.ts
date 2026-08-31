@@ -148,6 +148,84 @@ export function verifyLicenseKey(key: string, expectedCode: string): { ok: boole
   return { ok: true, validUntil: validUntil.toISOString() };
 }
 
+// ---------- Restablecimiento de PIN (herramienta del vendedor) ----------
+// El vendedor genera una clave firmada de un solo uso (válida 24h) con
+// `generatePinResetKey`. El cliente la introduce junto con su Código de
+// Negocio y un PIN nuevo en la pantalla de inicio de sesión. El servidor
+// verifica la firma ed25519, comprueba que no se haya usado ya (tabla
+// `pin_reset_used`) y actualiza el PIN del dueño. El cliente no puede
+// auto-generarse estas claves porque solo conoce la clave pública.
+
+export const PIN_RESET_TTL_MS = 24 * 60 * 60 * 1000;
+export const PIN_RESET_KIND = 'pin-reset';
+
+export interface PinResetKeyResult {
+  key: string;
+  expiresAt: string;
+}
+
+/**
+ * Firma una clave de restablecimiento de PIN.
+ * Formato: base64url(JSON.stringify({ kind, code, expiresAt })) + '.' + base64url(signature).
+ */
+export function generatePinResetKey(code: string, privPem: string): PinResetKeyResult {
+  const expiresAt = new Date(Date.now() + PIN_RESET_TTL_MS).toISOString();
+  const payload = JSON.stringify({ kind: PIN_RESET_KIND, code, expiresAt });
+  const signature = edSign(null, Buffer.from(payload, 'utf8'), privPem);
+  const key = `${Buffer.from(payload, 'utf8').toString('base64url')}.${signature.toString('base64url')}`;
+  return { key, expiresAt };
+}
+
+/**
+ * Verifica la firma de una clave de restablecimiento de PIN.
+ * El Código de Negocio se compara sin distinguir mayúsculas (el cliente puede
+ * teclearlo en minúsculas).
+ */
+export function verifyPinResetKey(
+  key: string,
+  expectedCode: string
+): { ok: boolean; error?: string } {
+  const normalized = key.replace(/\s/g, '');
+  const dot = normalized.indexOf('.');
+  if (dot <= 0 || dot >= normalized.length - 1) {
+    return { ok: false, error: 'Formato de clave inválido' };
+  }
+  const payloadB64 = normalized.slice(0, dot);
+  const sigB64 = normalized.slice(dot + 1);
+  let payloadJson: string;
+  let signature: Buffer;
+  try {
+    payloadJson = Buffer.from(payloadB64, 'base64url').toString('utf8');
+    signature = Buffer.from(sigB64, 'base64url');
+  } catch {
+    return { ok: false, error: 'Formato de clave inválido' };
+  }
+  let payload: { kind?: string; code?: string; expiresAt?: string };
+  try {
+    payload = JSON.parse(payloadJson);
+  } catch {
+    return { ok: false, error: 'Formato de clave inválido' };
+  }
+  if (payload.kind !== PIN_RESET_KIND) {
+    return { ok: false, error: 'Clave de restablecimiento inválida' };
+  }
+  if (String(payload.code ?? '').toUpperCase() !== String(expectedCode ?? '').toUpperCase()) {
+    return { ok: false, error: 'La clave no corresponde a este negocio' };
+  }
+  const valid = edVerify(null, Buffer.from(payloadJson, 'utf8'), LICENSE_PUBLIC_KEY, signature);
+  if (!valid) {
+    return { ok: false, error: 'Clave de restablecimiento inválida' };
+  }
+  const expiresAt = new Date(payload.expiresAt ?? '');
+  if (Number.isNaN(expiresAt.getTime())) {
+    return { ok: false, error: 'Clave con fecha de vencimiento inválida' };
+  }
+  if (Date.now() > expiresAt.getTime()) {
+    return { ok: false, error: 'La clave de restablecimiento venció. Solicite una nueva' };
+  }
+  return { ok: true };
+}
+
 export interface SessionRow {
   id?: string;
   business_code?: string;

@@ -94,7 +94,7 @@ export default function TransitView() {
             reason: cancelModal.reason
           });
         } catch (logErr) {
-          console.warn('[logAction] Error (offline?):', logErr);
+          if (import.meta.env.DEV) console.warn('[logAction] Error (offline?):', logErr);
         }
       }
       setCancelModal(null);
@@ -142,7 +142,7 @@ const handleWaste = async () => {
             reason: wasteModal.reason
           });
         } catch (logErr) {
-          console.warn('[logAction] Error (offline?):', logErr);
+          if (import.meta.env.DEV) console.warn('[logAction] Error (offline?):', logErr);
         }
       }
       setWasteModal(null);
@@ -180,7 +180,7 @@ const handleWaste = async () => {
             quantity: consumptionModal.quantity,
           });
         } catch (logErr) {
-          console.warn('[logAction] Error (offline?):', logErr);
+          if (import.meta.env.DEV) console.warn('[logAction] Error (offline?):', logErr);
         }
       }
       setConsumptionModal(null);

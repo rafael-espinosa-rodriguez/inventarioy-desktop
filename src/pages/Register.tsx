@@ -4,7 +4,7 @@ import { Loader2, Eye, EyeOff, Store } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { toast } from 'sonner';
 import InventarioYLogo from '../components/InventarioYLogo';
-import { localDb as supabase } from '../lib/db/localClient';
+import { localDb } from '../lib/db/localClient';
 
 export default function Register() {
   const [businessName, setBusinessName] = useState('');
@@ -46,7 +46,7 @@ export default function Register() {
         return;
       }
 
-      const result = await supabase.auth.signUp({
+      const result = await localDb.auth.signUp({
         businessName: businessName.trim(),
         pin,
       });

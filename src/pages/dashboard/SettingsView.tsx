@@ -7,7 +7,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
-import { localDb as supabase } from '../../lib/db/localClient';
+import { localDb } from '../../lib/db/localClient';
 import { toast } from 'sonner';
 import { validateNumber, getNumberFromString, esVitalicia } from '../../lib/utils';
 import { Switch } from '../../components/ui/switch';
@@ -75,7 +75,7 @@ export default function SettingsView() {
         return;
       }
       try {
-        const res = await supabase.meta();
+        const res = await localDb.meta();
         const ips: string[] = Array.isArray(res?.data?.ips) ? res.data.ips : [];
         const lan = ips.find((ip) => ip && !ip.startsWith('127.') && !ip.startsWith('0.') && ip !== '::1');
         if (lan) {
@@ -166,7 +166,7 @@ export default function SettingsView() {
         cupTransferEnabled: currencySettings.cupTransferEnabled ? 1 : 0,
       };
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('user_session')
       .update(updateData)
       .eq('id', user.id);
@@ -178,9 +178,9 @@ export default function SettingsView() {
         } else if (error.message.includes('duplicate')) {
           errorMessage = 'Ya existe un registro con estos datos';
         } else if (error.message.includes('network') || error.message.includes('fetch')) {
-          errorMessage = 'Error de conexión. Verifique su internet';
+          errorMessage = 'Error de conexión con el servidor local';
         }
-        console.error('Error guardado:', errorMessage, error);
+        if (import.meta.env.DEV) console.error('Error guardado:', errorMessage, error);
         toast.error(errorMessage);
         setIsSaving(false);
         setIsSubmitting(false);
@@ -188,7 +188,7 @@ export default function SettingsView() {
         try {
           await fetchUser();
         } catch (fetchError) {
-          console.warn('No se pudo recargar el usuario:', fetchError);
+          if (import.meta.env.DEV) console.warn('No se pudo recargar el usuario:', fetchError);
         }
         
         try {
@@ -196,7 +196,7 @@ export default function SettingsView() {
             changes: Object.keys(formData).filter(k => formData[k as keyof typeof formData] !== (user as any)?.[k]).join(', ')
           });
         } catch (logError) {
-          console.warn('No se pudo registrar la acción:', logError);
+          if (import.meta.env.DEV) console.warn('No se pudo registrar la acción:', logError);
         }
         
         toast.success('Configuración guardada exitosamente');
@@ -204,7 +204,7 @@ export default function SettingsView() {
         setIsSubmitting(false);
       }
     } catch (err) {
-      console.error('Excepción en guardado:', err);
+      if (import.meta.env.DEV) console.error('Excepción en guardado:', err);
       toast.error('Error inesperado al guardar');
       setIsSaving(false);
       setIsSubmitting(false);

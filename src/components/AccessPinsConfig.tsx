@@ -1,379 +1,496 @@
 import { useState } from 'react';
-import { Lock, Plus, X, Pencil, Trash2, CheckCircle, XCircle, Eye, EyeOff, WifiOff } from 'lucide-react';
+import { Plus, Trash2, Edit, KeyRound, Loader2, Check, ShieldCheck } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { useDatabaseStore, ROLE_LABELS, ROLE_MODULES } from '../store/dbStore';
+import { Modal } from './ui/Modal';
+import { ConfirmDialog } from './ui/ConfirmDialog';
+import { useDatabaseStore, getRoleModules, getRoleLabel, type AccessPin } from '../store/dbStore';
 import { toast } from 'sonner';
-import { useOfflineAction } from '../hooks/useOfflineDisabled';
-import OfflineLimitBanner from './OfflineLimitBanner';
+import type { Role } from '../store/dbStore';
 
-const MODULE_TRANSLATIONS: Record<string, string> = {
-  sales: 'Ventas',
-  inventory: 'Almacén',
-  movements: 'Movimientos',
-  transit: 'Tránsito',
-  recipes: 'Recetas',
-  consumption: 'Consumo',
-  closings: 'Cierres',
-  charts: 'Gráficos',
-  analysis: 'Análisis',
-  filtered: 'Centro Filtrado',
-  hr: 'RR.HH.',
-  settings: 'Configuración',
-};
+const ALL_MODULES: { key: string; label: string }[] = [
+  { key: 'sales', label: 'Ventas' },
+  { key: 'inventory', label: 'Inventario' },
+  { key: 'movements', label: 'Movimientos' },
+  { key: 'transit', label: 'Tránsito' },
+  { key: 'recipes', label: 'Recetas' },
+  { key: 'consumption', label: 'Consumo' },
+  { key: 'closings', label: 'Cierres' },
+  { key: 'charts', label: 'Gráficos' },
+  { key: 'analysis', label: 'Análisis' },
+  { key: 'filtered', label: 'Centro Filtrado' },
+  { key: 'hr', label: 'RR.HH.' },
+  { key: 'settings', label: 'Configuración' },
+];
 
-const translateModules = (modules: string[]): string => {
-  return modules.map(m => MODULE_TRANSLATIONS[m] || m).join(', ');
-};
+const ALL_MODULE_KEYS = ALL_MODULES.map(m => m.key);
 
 export default function AccessPinsConfig() {
-  const { accessPins, saveAccessPin, toggleAccessPin, deleteAccessPin } = useDatabaseStore();
-  const { disabled: isOffline, message: offlineMessage } = useOfflineAction('gestionar PINs de acceso');
-  const [showModal, setShowModal] = useState(false);
-  const [editingPin, setEditingPin] = useState<string | null>(null);
-  const [selectedRole, setSelectedRole] = useState('');
+  const {
+    accessPins,
+    roles,
+    employees,
+    saveAccessPin,
+    toggleAccessPin,
+    deleteAccessPin,
+    deleteRole,
+  } = useDatabaseStore();
+
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [editingPin, setEditingPin] = useState<AccessPin | null>(null);
+  const [employeeMode, setEmployeeMode] = useState<'existing' | 'other'>('existing');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [otherName, setOtherName] = useState('');
   const [pinValue, setPinValue] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [pinName, setPinName] = useState('');
+  const [roleMode, setRoleMode] = useState<'new' | 'existing'>('new');
+  const [selectedRoleId, setSelectedRoleId] = useState('');
+  const [newRoleName, setNewRoleName] = useState('');
+  const [selectedModules, setSelectedModules] = useState<string[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
   const [showPin, setShowPin] = useState(false);
-  const [showConfirmPin, setShowConfirmPin] = useState(false);
+  const [pinToDelete, setPinToDelete] = useState<AccessPin | null>(null);
+  const [roleToDelete, setRoleToDelete] = useState<Role | null>(null);
+  const [isDeletingRole, setIsDeletingRole] = useState(false);
 
-  const availableRoles = ['owner', 'economist', 'admin', 'supervisor', 'clerk'] as const;
-  
-  const hasOwnerPin = accessPins.some(p => p.role === 'owner');
+  const roleLabel = (roleId: string): string => {
+    const r = roles.find(x => x.id === roleId);
+    if (r?.name) return r.name;
+    return getRoleLabel(roleId);
+  };
 
-  const handleOpenModal = (role?: string) => {
-    if (!hasOwnerPin && role && role !== 'owner') {
-      toast.error('Debe configurar primero el PIN de Dueño/a antes de configurar otros roles');
-      return;
-    }
-    if (role) {
-      if (role === 'owner' && accessPins.some(p => p.role === 'owner')) {
-        setEditingPin(role);
-        setSelectedRole(role);
-      } else {
-        setEditingPin(null);
-        setSelectedRole(role);
-      }
-    } else {
-      setEditingPin(null);
-      setSelectedRole('');
-    }
+  const roleModulesOf = (roleId: string): string[] => {
+    const r = roles.find(x => x.id === roleId);
+    if (r && Array.isArray(r.modules) && r.modules.length) return r.modules.map(String);
+    return getRoleModules(roleId);
+  };
+
+  const isOwnerMode = (editingPin?.role === 'owner') || (!editingPin && false);
+  const effectiveModules = selectedRoleId === 'owner' ? ALL_MODULE_KEYS : selectedModules;
+
+  // Opciones de rol: roles existentes (sin Dueño) + Dueño solo si se edita el dueño.
+  const roleOptions = roles.filter(r => r.id !== 'owner');
+  const showOwnerOption = !!editingPin && editingPin.role === 'owner';
+
+  const resetModal = () => {
+    setEditingPin(null);
+    setEmployeeMode('existing');
+    setSelectedEmployeeId(employees[0]?.id || '');
+    setOtherName('');
     setPinValue('');
-    setConfirmPin('');
-    setPinName('');
-    setShowModal(true);
+    setRoleMode('new');
+    setSelectedRoleId('');
+    setNewRoleName('');
+    setSelectedModules([]);
+    setShowPin(false);
   };
 
-  const handleSavePin = async () => {
-    if (!pinName.trim()) {
-      toast.error('El nombre es obligatorio');
-      return;
-    }
-    if (pinValue.length !== 4) {
-      toast.error('El PIN debe tener 4 dígitos');
-      return;
-    }
-    if (pinValue !== confirmPin) {
-      toast.error('Los PINs no coinciden');
-      return;
-    }
-    if (!selectedRole) {
-      toast.error('Seleccione un rol');
-      return;
-    }
+  const openCreateModal = () => {
+    resetModal();
+    setShowPinModal(true);
+  };
 
-    if (!hasOwnerPin && selectedRole !== 'owner') {
-      toast.error('Debe configurar primero el PIN de Dueño/a antes de configurar otros roles');
-      return;
-    }
-
-    if (selectedRole === 'owner' && accessPins.some(p => p.role === 'owner' && p.is_active)) {
-      toast.error('Ya existe un PIN de Dueño/a activo. Puede editarlo o eliminarlo primero.');
-      return;
-    }
-
-    const result = await saveAccessPin(selectedRole, pinValue, pinName);
-    if (result.success) {
-      toast.success(`PIN de ${ROLE_LABELS[selectedRole]} - ${pinName} guardado`);
-      setShowModal(false);
-      setPinValue('');
-      setConfirmPin('');
-      setPinName('');
+  const openEditModal = (pin: AccessPin) => {
+    setEditingPin(pin);
+    const isOwner = pin.role === 'owner';
+    const emp = employees.find(e => e.name === pin.pin_name);
+    setEmployeeMode(emp ? 'existing' : 'other');
+    setSelectedEmployeeId(emp?.id || '');
+    setOtherName(emp ? '' : pin.pin_name || '');
+    setPinValue('');
+    setShowPin(false);
+    if (isOwner) {
+      setRoleMode('existing');
+      setSelectedRoleId('owner');
+      setNewRoleName('');
+      setSelectedModules(ALL_MODULE_KEYS);
     } else {
-      toast.error(result.error || 'Error al guardar PIN');
-    }
-  };
-
-  const handleToggle = async (pinId: string, isActive: boolean) => {
-    const result = await toggleAccessPin(pinId, !isActive);
-    if (result.success) {
-      toast.success(isActive ? 'PIN desactivado' : 'PIN activado');
-    } else {
-      toast.error(result.error || 'Error al actualizar PIN');
-    }
-  };
-
-  const handleDelete = async (pinId: string) => {
-    if (confirm('¿Eliminar este PIN?')) {
-      const result = await deleteAccessPin(pinId);
-      if (result.success) {
-        toast.success('PIN eliminado');
+      const roleExists = roles.some(r => r.id === pin.role);
+      if (roleExists) {
+        setRoleMode('existing');
+        setSelectedRoleId(pin.role);
+        setSelectedModules(roleModulesOf(pin.role));
       } else {
-        toast.error(result.error || 'Error al eliminar PIN');
+        setRoleMode('new');
+        setSelectedRoleId('');
+        setNewRoleName(roleLabel(pin.role));
+        setSelectedModules(roleModulesOf(pin.role));
       }
     }
+    setShowPinModal(true);
   };
+
+  const toggleModule = (key: string) => {
+    if (selectedRoleId === 'owner') return;
+    setSelectedModules(prev => prev.includes(key) ? prev.filter(m => m !== key) : [...prev, key]);
+  };
+
+  const handleSave = async () => {
+    const name = employeeMode === 'existing'
+      ? (employees.find(e => e.id === selectedEmployeeId)?.name || '')
+      : otherName.trim();
+    if (!name) {
+      toast.error('Ingrese el nombre del empleado o selecciónelo de la lista');
+      return;
+    }
+    if (!/^\d{4}$/.test(pinValue)) {
+      toast.error('El PIN debe tener exactamente 4 dígitos');
+      return;
+    }
+    if (roleMode === 'new') {
+      if (!newRoleName.trim()) {
+        toast.error('Ingrese el nombre del rol');
+        return;
+      }
+      if (effectiveModules.length === 0) {
+        toast.error('Seleccione al menos un módulo');
+        return;
+      }
+    }
+    setIsSaving(true);
+    const result = await saveAccessPin({
+      roleId: roleMode === 'existing' ? selectedRoleId : undefined,
+      roleName: roleMode === 'new' ? newRoleName.trim() : undefined,
+      modules: effectiveModules,
+      pin: pinValue,
+      name,
+      pinId: editingPin?.id,
+    });
+    setIsSaving(false);
+    if (result.success) {
+      toast.success(editingPin ? 'PIN actualizado' : 'PIN creado');
+      setShowPinModal(false);
+    } else {
+      toast.error(result.error || 'Error al guardar');
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pinToDelete) return;
+    const result = await deleteAccessPin(pinToDelete.id);
+    if (result.success) {
+      toast.success('PIN eliminado');
+    } else {
+      toast.error(result.error || 'Error al eliminar');
+    }
+    setPinToDelete(null);
+  };
+
+  const confirmDeleteRole = async () => {
+    if (!roleToDelete) return;
+    setIsDeletingRole(true);
+    const result = await deleteRole(roleToDelete.id);
+    setIsDeletingRole(false);
+    if (result.success) {
+      toast.success('Rol eliminado');
+    } else {
+      toast.error(result.error || 'Error al eliminar el rol');
+    }
+    setRoleToDelete(null);
+  };
+
+  const roleSummary = accessPins.reduce<Record<string, number>>((acc, p) => {
+    acc[p.role] = (acc[p.role] || 0) + 1;
+    return acc;
+  }, {});
 
   return (
-    <div className="space-y-8">
-      <OfflineLimitBanner moduleName="Gestión de PINs" />
-      {/* Header */}
-      <div className="border-b border-border pb-6">
-        <h3 className="text-xl font-semibold text-text flex items-center gap-3">
-          <Lock className="h-6 w-6 text-primary" />
-          Control de Acceso por PIN
-        </h3>
-        <p className="text-base text-text-secondary mt-2">
-          Configure pines de seguridad para limitar el acceso a los módulos del sistema
-        </p>
-      </div>
-
-      {/* Resumen de Roles */}
-      <div className="p-4 rounded-xl bg-surface-hover border border-border/30">
-        <h4 className="text-base font-medium text-text mb-3 flex items-center gap-2">
-          Resumen de Roles
-        </h4>
-        <div className="flex flex-wrap gap-2">
-          {(['owner', 'economist', 'admin', 'supervisor', 'clerk'] as const).map(role => (
-            <span 
-              key={role} 
-              className={`px-3 py-1 rounded-full text-xs font-medium ${
-                accessPins.some(p => p.role === role && p.is_active) 
-                  ? 'bg-success/20 text-success' 
-                  : accessPins.some(p => p.role === role && !p.is_active)
-                    ? 'bg-warning/20 text-warning'
-                    : 'bg-border text-text-secondary'
-              }`}
-            >
-              {ROLE_LABELS[role]}
-            </span>
-          ))}
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-text">
+            <KeyRound className="h-5 w-5 text-primary" />
+            Pines de Acceso
+          </h3>
+          <p className="text-sm text-text-secondary">
+            Roles personalizables. Cada rol agrupa los módulos a los que tendrá acceso el empleado.
+          </p>
         </div>
-      </div>
-
-      {/* Crear Nuevo PIN */}
-      <div className="p-4 rounded-xl bg-bg/50 border border-border/30">
-        <h4 className="text-base font-medium text-text mb-3 flex items-center gap-2">
-          <span>➕</span> Crear Nuevo PIN
-        </h4>
-        <Button
-          onClick={() => handleOpenModal()}
-          className="gap-2 w-full sm:w-auto"
-          disabled={isOffline}
-          title={isOffline ? offlineMessage : undefined}
-        >
+        <Button onClick={openCreateModal} className="flex items-center gap-2">
           <Plus className="h-4 w-4" />
           Agregar Nuevo PIN
-          {isOffline && <WifiOff className="h-3 w-3 ml-1 opacity-60" />}
         </Button>
       </div>
 
-      {/* Lista de PINs Activos */}
-      {accessPins.length === 0 ? (
-        <div className="text-center py-6 px-4 rounded-xl bg-warning/5 border border-warning/30">
-          <Lock className="h-8 w-8 mx-auto mb-2 text-warning" />
-          <p className="font-medium text-warning text-sm">Configure primero el PIN de Propietario/a</p>
-          <p className="text-xs text-text-secondary mt-2">
-            Debe configurar el PIN de Propietario/a antes que cualquier otro para poder acceder a todos los módulos del sistema.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <h4 className="text-base font-medium text-text flex items-center gap-2">
-            PINs Configurados
-          </h4>
-          {accessPins.map(pin => (
-            <div
-              key={pin.id}
-              className="flex flex-col p-4 bg-surface rounded-lg border border-border/30 hover:border-primary/30 transition-colors"
-            >
-              <div className="flex items-center justify-between w-full mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-text text-base">{ROLE_LABELS[pin.role]}{pin.pin_name ? `: ${pin.pin_name}` : ''}</span>
-                  {pin.is_active ? (
-                    <span className="flex items-center gap-1 text-sm text-success">
-                      <CheckCircle className="h-4 w-4" /> Activo
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-sm text-text-secondary">
-                      <XCircle className="h-4 w-4" /> Inactivo
-                    </span>
+      {/* Resumen de roles */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {roles.map(r => {
+          const pinsCount = roleSummary[r.id] || 0;
+          return (
+            <div key={r.id} data-testid="role-card" className="rounded-lg border border-border bg-bg/50 p-3">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-text">{r.name}</span>
+                <div className="flex items-center gap-1">
+                  <span className="rounded-full bg-surface px-2 py-0.5 text-xs text-text-secondary">
+                    {pinsCount} PIN{pinsCount === 1 ? '' : 's'}
+                  </span>
+                  {r.id !== 'owner' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-danger hover:text-danger"
+                      disabled={pinsCount > 0}
+                      title={pinsCount > 0
+                        ? 'No se puede eliminar un rol que tiene PINs. Elimine primero sus PINs.'
+                        : 'Eliminar rol'}
+                      aria-label={pinsCount > 0 ? `Eliminar rol ${r.name} (tiene PINs)` : `Eliminar rol ${r.name}`}
+                      onClick={() => setRoleToDelete(r)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   )}
                 </div>
               </div>
-              <p className="text-sm text-text-secondary mb-2">
-                <strong>Módulos:</strong> {translateModules(ROLE_MODULES[pin.role] || [])}
+              <p className="mt-1 text-xs text-text-secondary">
+                {Array.isArray(r.modules) ? r.modules.length : 0} módulo(s)
               </p>
-              <div className="flex gap-2 mt-auto pt-2 border-t border-border/30">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-sm px-3"
-                  onClick={() => handleToggle(pin.id, pin.is_active)}
-                  disabled={isOffline}
-                  title={isOffline ? offlineMessage : undefined}
-                >
-                  {pin.is_active ? 'Desactivar' : 'Activar'}
-                  {isOffline && <WifiOff className="h-3 w-3 ml-1 opacity-60" />}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-danger hover:text-danger px-2"
-                  onClick={() => handleDelete(pin.id)}
-                  disabled={isOffline}
-                  title={isOffline ? offlineMessage : undefined}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
 
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm modal-backdrop">
-          <div className="w-full max-w-md rounded-2xl border border-border/50 bg-surface p-6 shadow-2xl">
-            <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-text">
-                {editingPin ? 'Editar PIN' : 'Agregar PIN'}
-              </h2>
-              <button
-                onClick={() => setShowModal(false)}
-                className="rounded-full p-2 text-text-secondary hover:bg-surface-hover hover:text-text transition-colors"
-              >
-                <X className="h-5 w-5" />
-              </button>
+      {/* Lista de PINs */}
+      <div className="space-y-2">
+        {accessPins.length === 0 && (
+          <p className="text-sm text-text-secondary">No hay pines configurados todavía.</p>
+        )}
+        {accessPins.map(pin => (
+          <div
+            key={pin.id}
+            className="flex items-center justify-between rounded-lg border border-border bg-surface p-3"
+          >
+            <div className="min-w-0">
+              <p className="truncate font-medium text-text">{pin.pin_name}</p>
+              <p className="text-xs text-text-secondary">
+                Rol: {roleLabel(pin.role)} · {roleModulesOf(pin.role).length} módulo(s)
+              </p>
             </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-text mb-2 block">Rol</label>
-                <select
-                  value={selectedRole}
-                  onChange={e => setSelectedRole(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-border/50 bg-bg text-text"
-                  disabled={!!editingPin}
-                >
-                  <option value="">Seleccione un rol</option>
-                  {!hasOwnerPin ? (
-                    <option value="owner">{ROLE_LABELS['owner']}</option>
-                  ) : (
-                    <>
-                      {availableRoles.map(role => {
-                        if (role === 'owner' && accessPins.some(p => p.role === 'owner' && p.is_active)) {
-                          return null;
-                        }
-                        return (
-                          <option key={role} value={role}>
-                            {ROLE_LABELS[role]}
-                          </option>
-                        );
-                      })}
-                    </>
-                  )}
-                </select>
-                {!hasOwnerPin && (
-                  <p className="text-xs text-warning mt-1">Debe configurar primero el PIN de Dueño/a</p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-text mb-2 block">Nombre del usuario *</label>
-                <Input
-                  value={pinName}
-                  onChange={e => setPinName(e.target.value)}
-                  placeholder="Ej: Juan, María, Carlos..."
-                  className="text-text"
-                />
-                <p className="text-xs text-text-secondary">Este nombre aparecerá en el registro de acciones</p>
-              </div>
-
-              <div className="relative">
-                <label className="text-sm font-medium text-text mb-2 block">PIN (4 dígitos)</label>
-                <Input
-                  type="text"
-                  maxLength={4}
-                  value={pinValue}
-                  onChange={e => setPinValue(e.target.value.replace(/\D/g, ''))}
-                  placeholder="0000"
-                  className="font-mono text-center text-lg tracking-widest pr-10"
-                  style={{ WebkitTextSecurity: showPin ? 'none' : 'disc' } as React.CSSProperties}
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPin(!showPin)}
-                  className="absolute right-3 top-9 text-text-secondary hover:text-text"
-                >
-                  {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-
-              <div className="relative">
-                <label className="text-sm font-medium text-text mb-2 block">Confirmar PIN</label>
-                <Input
-                  type="text"
-                  maxLength={4}
-                  value={confirmPin}
-                  onChange={e => setConfirmPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="0000"
-                  className="font-mono text-center text-lg tracking-widest pr-10"
-                  style={{ WebkitTextSecurity: showConfirmPin ? 'none' : 'disc' } as React.CSSProperties}
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPin(!showConfirmPin)}
-                  className="absolute right-3 top-9 text-text-secondary hover:text-text"
-                >
-                  {showConfirmPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-
-              {selectedRole && (
-                <div className="p-3 bg-surface-hover rounded-lg">
-                  <p className="text-xs text-text-secondary font-medium mb-1">Módulos permitidos:</p>
-                  <p className="text-xs text-text-secondary">
-                    {translateModules(ROLE_MODULES[selectedRole] || [])}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div className="flex gap-3 mt-6">
+            <div className="flex items-center gap-1">
               <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => setShowModal(false)}
+                size="sm"
+                variant={pin.is_active ? 'default' : 'outline'}
+                onClick={() => toggleAccessPin(pin.id, !pin.is_active)}
+                title={pin.is_active ? 'Desactivar PIN' : 'Activar PIN'}
               >
-                Cancelar
+                {pin.is_active ? 'Activo' : 'Inactivo'}
               </Button>
-              <Button
-                className="flex-1"
-                onClick={handleSavePin}
-                disabled={isOffline || pinValue.length !== 4 || pinValue !== confirmPin || !selectedRole}
-                title={isOffline ? offlineMessage : undefined}
-              >
-                Guardar PIN
-                {isOffline && <WifiOff className="h-3 w-3 ml-1 opacity-60" />}
+              <Button size="sm" variant="ghost" onClick={() => openEditModal(pin)} aria-label={`Editar PIN ${pin.pin_name}`}>
+                <Edit className="h-4 w-4" />
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setPinToDelete(pin)} className="text-danger hover:text-danger" aria-label={`Eliminar PIN ${pin.pin_name}`}>
+                <Trash2 className="h-4 w-4" />
               </Button>
             </div>
           </div>
+        ))}
+      </div>
+
+      {/* Modal de creación/edición */}
+      <Modal
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        title={editingPin ? 'Editar PIN' : 'Agregar Nuevo PIN'}
+        size="lg"
+      >
+        <div className="space-y-5">
+          {/* Empleado */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-secondary">Empleado</label>
+            {isOwnerMode ? (
+              <Input value="Dueño/a (este negocio)" disabled className="bg-bg" />
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <select
+                    value={employeeMode}
+                    onChange={e => setEmployeeMode(e.target.value as 'existing' | 'other')}
+                    className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="existing">Empleado de RR.HH.</option>
+                    <option value="other">Otro (escribir nombre)</option>
+                  </select>
+                </div>
+                {employeeMode === 'existing' ? (
+                  <select
+                    value={selectedEmployeeId}
+                    onChange={e => setSelectedEmployeeId(e.target.value)}
+                    className="mt-2 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="">Seleccione un empleado…</option>
+                    {employees.map(e => (
+                      <option key={e.id} value={e.id}>{e.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <Input
+                    className="mt-2"
+                    placeholder="Nombre del empleado"
+                    value={otherName}
+                    onChange={e => setOtherName(e.target.value)}
+                  />
+                )}
+              </>
+            )}
+          </div>
+
+          {/* PIN */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-secondary">
+              PIN (4 dígitos)
+            </label>
+            <div className="relative">
+              <Input
+                type={showPin ? 'text' : 'password'}
+                inputMode="numeric"
+                maxLength={24}
+                placeholder="0000"
+                value={pinValue}
+                onChange={e => setPinValue(e.target.value.replace(/\D/g, '').slice(0, 24))}
+                className="pr-12"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPin(!showPin)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text"
+              >
+                {showPin ? 'Ocultar' : 'Mostrar'}
+              </button>
+            </div>
+          </div>
+
+          {/* Rol */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-secondary">Rol</label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => { setRoleMode('new'); setSelectedModules([]); }}
+                className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                  roleMode === 'new'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border text-text-secondary hover:border-primary/50'
+                }`}
+              >
+                <Plus className="mr-1 inline h-4 w-4" />
+                Crear nuevo rol
+              </button>
+              {roleOptions.map(r => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => { setRoleMode('existing'); setSelectedRoleId(r.id); setSelectedModules(roleModulesOf(r.id)); }}
+                  className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    roleMode === 'existing' && selectedRoleId === r.id
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-text-secondary hover:border-primary/50'
+                  }`}
+                >
+                  {r.name}
+                </button>
+              ))}
+              {showOwnerOption && (
+                <button
+                  type="button"
+                  onClick={() => { setRoleMode('existing'); setSelectedRoleId('owner'); setSelectedModules(ALL_MODULE_KEYS); }}
+                  className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    roleMode === 'existing' && selectedRoleId === 'owner'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-text-secondary hover:border-primary/50'
+                  }`}
+                >
+                  <ShieldCheck className="mr-1 inline h-4 w-4" />
+                  Dueño/a
+                </button>
+              )}
+            </div>
+
+            {roleMode === 'new' && (
+              <Input
+                className="mt-2"
+                placeholder="Nombre del nuevo rol (ej. Cajero Turno Noche)"
+                value={newRoleName}
+                onChange={e => setNewRoleName(e.target.value)}
+              />
+            )}
+            {roleMode === 'existing' && selectedRoleId !== 'owner' && (
+              <p className="mt-2 text-xs text-text-secondary">
+                Al guardar, los módulos se aplican a <strong>todos</strong> los PINs que usan este rol.
+              </p>
+            )}
+          </div>
+
+          {/* Módulos */}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-text-secondary">
+              Módulos del rol
+            </label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {ALL_MODULES.map(m => {
+                const checked = effectiveModules.includes(m.key);
+                const disabled = selectedRoleId === 'owner' || m.key === 'settings';
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => toggleModule(m.key)}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                      checked
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-text-secondary hover:border-primary/50'
+                    } ${disabled ? 'cursor-not-allowed opacity-70' : ''}`}
+                  >
+                    <span className={`flex h-4 w-4 items-center justify-center rounded border ${
+                      checked ? 'border-primary bg-primary text-black' : 'border-border'
+                    }`}>
+                      {checked && <Check className="h-3 w-3" />}
+                    </span>
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedRoleId === 'owner' && (
+              <p className="mt-2 text-xs text-text-secondary">
+                El Dueño/a siempre tiene acceso a todos los módulos.
+              </p>
+            )}
+            {selectedRoleId !== 'owner' && (
+              <p className="mt-2 text-xs text-text-secondary">
+                El módulo Configuración está reservado para el Dueño/a.
+              </p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="outline" onClick={() => setShowPinModal(false)} disabled={isSaving}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSave} disabled={isSaving}>
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {editingPin ? 'Guardar cambios' : 'Crear PIN'}
+            </Button>
+          </div>
         </div>
-      )}
+      </Modal>
+
+      <ConfirmDialog
+        isOpen={!!pinToDelete}
+        onClose={() => setPinToDelete(null)}
+        title="Eliminar PIN"
+        description={pinToDelete ? `¿Eliminar el PIN de "${pinToDelete.pin_name}" (${roleLabel(pinToDelete.role)})? Esta acción no se puede deshacer.` : undefined}
+        confirmLabel="Eliminar"
+        onConfirm={confirmDelete}
+      />
+
+      <ConfirmDialog
+        isOpen={!!roleToDelete}
+        onClose={() => setRoleToDelete(null)}
+        title="Eliminar rol"
+        description={roleToDelete ? `¿Eliminar el rol "${roleToDelete.name}"? Esta acción no se puede deshacer.` : undefined}
+        confirmLabel="Eliminar"
+        onConfirm={confirmDeleteRole}
+        isLoading={isDeletingRole}
+      />
     </div>
   );
 }

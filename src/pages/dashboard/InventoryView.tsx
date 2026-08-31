@@ -16,7 +16,7 @@ import {
   UnitAbbrev,
   UNIT_LABELS,
 } from '../../lib/unitConversion';
-import { validateNumber, normalizeStr } from '../../lib/utils';
+import { validateNumber, normalizeStr, isActive } from '../../lib/utils';
 import { useRealTimeClock } from '../../lib/hooks/useRealTimeClock';
 
 const DEFAULT_CATEGORIES = [
@@ -38,7 +38,7 @@ export default function InventoryView() {
   const { user } = useAuthStore();
   const { products, addProduct, addMovement, logAction, currentWarehouseId, productWarehouse, updateProductWarehouseQuantity, transitItems, movements } = useDatabaseStore();
   
-  const activeProducts = products.filter(p => p.is_active !== false);
+  const activeProducts = products.filter(isActive);
 
   const [isCustomCategory, setIsCustomCategory] = useState(false);
   const [customCategory, setCustomCategory] = useState('');
@@ -301,7 +301,7 @@ export default function InventoryView() {
       movementClock.reset();
       toast.success('Movimiento registrado exitosamente');
     } catch (error: any) {
-      console.error('Error al registrar movimiento:', error);
+      if (import.meta.env.DEV) console.error('Error al registrar movimiento:', error);
       toast.error(error.message || 'Error al registrar movimiento');
     } finally {
       setIsSubmittingMovement(false);

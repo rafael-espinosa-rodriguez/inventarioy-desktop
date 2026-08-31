@@ -6,7 +6,7 @@ import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { validateNumber, exportToExcel } from '../../lib/utils';
+import { validateNumber, exportToExcel, isActive } from '../../lib/utils';
 import { normalizeUnit, getCompatibleUnits, convertUnit, type UnitAbbrev } from '../../lib/unitConversion';
 import { formatNumber } from '../../lib/formatNumber';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
@@ -112,7 +112,7 @@ export default function StockView() {
   };
 
   const activeProducts = useMemo(() => {
-    return products.filter(p => p.is_active !== false);
+    return products.filter(isActive);
   }, [products]);
 
   const lastMovementDates = useMemo(() => {

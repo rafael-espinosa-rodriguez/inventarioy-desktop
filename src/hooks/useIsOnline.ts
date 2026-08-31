@@ -1,19 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
+/**
+ * La app es 100% local: la UI es servida por el propio servidor Fastify embebido,
+ * así que el estado de conexión a internet del sistema (navigator.onLine) NO aplica.
+ * Se reporta siempre online para evitar falsos "offline" en LAN sin salida a internet.
+ */
 export function useIsOnline() {
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
+    setIsOnline(true);
   }, []);
 
   return isOnline;

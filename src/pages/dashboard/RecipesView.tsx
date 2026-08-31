@@ -7,7 +7,7 @@ import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { NumberInput } from '../../components/ui/NumberInput';
 import { toast } from 'sonner';
-import { validateNumber, exportToExcel } from '../../lib/utils';
+import { validateNumber, exportToExcel, isActive } from '../../lib/utils';
 import {
   convertUnit,
   getCompatibleUnits,
@@ -30,7 +30,7 @@ export default function RecipesView() {
     return !!activePin && ['owner', 'economist'].includes(activePin.role);
   };
   
-  const activeProducts = products.filter(p => p.is_active !== false);
+  const activeProducts = products.filter(isActive);
 
   const { filters, setFilters, resetFilters } = usePersistentFilters<{ searchTerm: string }>('recipes', { searchTerm: '' });
   const { searchTerm } = filters;

@@ -83,11 +83,17 @@ export default function MovementsView() {
 
     // Recorrer TODOS los movimientos cargados del más reciente al más antiguo:
     // el balance de una fila es el stock justo después de ese movimiento.
-    const allDesc = [...movements].sort((a, b) => {
-      const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (dateDiff !== 0) return dateDiff;
-      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
-    });
+    // Se excluyen las SALIDAS/MERMAS SIN warehouse_id (ventas/consumos desde tránsito):
+    // esos no descontaron el almacén (la SALIDA original a tránsito ya lo hizo),
+    // por lo que no deben descontar el balance del "Disponible".
+    // Las ENTRADAS/AJUSTES sin warehouse_id (stock inicial legacy) sí se conservan.
+    const allDesc = [...movements]
+      .filter(m => !(m.type === 'SALIDA' || m.type === 'MERMA') || (m as any).warehouse_id)
+      .sort((a, b) => {
+        const dateDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
+        if (dateDiff !== 0) return dateDiff;
+        return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+      });
 
     const runningStock: Record<string, number> = {};
     const balanceByMovementId: Record<string, number> = {};

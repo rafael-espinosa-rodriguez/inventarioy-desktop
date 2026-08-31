@@ -4,13 +4,13 @@ import { Filter, Search, ArrowUpDown, AlertTriangle, CheckCircle2, Settings2, Pr
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
-import { calculateMargin, exportToExcel } from '../../lib/utils';
+import { calculateMargin, exportToExcel, isActive } from '../../lib/utils';
 import SortIcon from '../../components/ui/SortIcon';
 
 export default function FilteredCenterView() {
   const { products, productWarehouse, currentWarehouseId } = useDatabaseStore();
   
-  const activeProducts = products.filter(p => p.is_active !== false);
+  const activeProducts = products.filter(isActive);
 
   const getDisponible = (productId: string): number => {
     if (!currentWarehouseId || productWarehouse.length === 0) return Number(products.find(p => p.id === productId)?.quantity || 0);

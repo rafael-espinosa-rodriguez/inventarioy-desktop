@@ -5,6 +5,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { rmSync } from 'node:fs';
+import { randomBytes, scryptSync } from 'node:crypto';
 
 const E2E_DIR = path.join(os.tmpdir(), 'inventarioy-e2e');
 rmSync(E2E_DIR, { recursive: true, force: true });
@@ -46,6 +47,19 @@ db.prepare(
   now
 );
 
+// PIN del owner: 1234 (hash scrypt como hace el servidor).
+const pinSalt = randomBytes(16);
+const pinHash = scryptSync('1234', pinSalt, 64);
+db.prepare(
+  `INSERT INTO access_pins (id, user_id, pin_hash, role, pin_name, is_active, failed_attempts, blocked_until, created_at)
+   VALUES (?, ?, ?, 'owner', 'Dueño E2E', 1, 0, NULL, ?)`
+).run(
+  'pin-owner-e2e',
+  'owner',
+  `scrypt$${pinSalt.toString('hex')}$${pinHash.toString('hex')}`,
+  now
+);
+
 const server = await createServer({
   port: 4173,
   host: '127.0.0.1',
@@ -55,3 +69,4 @@ const server = await createServer({
 await server.listen({ port: 4173, host: '127.0.0.1' });
 console.log(`[e2e] Fastify temporal listo en http://127.0.0.1:4173`);
 console.log(`[e2e] BD temporal: ${path.join(E2E_DIR, 'inventarioy.db')}`);
+console.log(`[e2e] PIN owner: 1234`);

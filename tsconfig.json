@@ -24,5 +24,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["supabase", "docs", "tests"]
+  "exclude": ["docs", "tests"]
 }

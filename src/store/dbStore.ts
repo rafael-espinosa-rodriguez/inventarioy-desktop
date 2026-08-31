@@ -1,13 +1,11 @@
 import { create } from 'zustand';
-import { localDb as supabase } from '../lib/db/localClient';
+import { localDb } from '../lib/db/localClient';
 import { useAuthStore } from './authStore';
 import { toast } from 'sonner';
-import { db, cacheAllData, getCachedProducts, getCachedMovements, getCachedWarehouses, getCachedTransitItems, getCachedSales, getCachedRecipes, getCachedEmployees, getCachedCategories, getCachedPendingAccounts, getCachedDailyClosings, getCachedAccessPins, getCachedProductWarehouse, getSyncQueueCount, addToSyncQueue, cacheAccessPins } from '../lib/dexieDb';
-import { syncEngine } from '../lib/syncEngine';
 import { isDateClosed } from '../lib/dateUtils';
 import { calcularNomina } from '../utils/payrollCalculations';
 import { logger } from '../lib/logger';
-import { normalizeStr } from '../lib/utils';
+import { normalizeStr, isActive } from '../lib/utils';
 import { trackLocalCreation, untrackLocalCreation } from '../lib/realtimeGuard';
 
 // Versión desktop: los datos viven en el servidor local embebido (Electron).
@@ -191,12 +189,22 @@ export interface AccessPin {
   id: string;
   user_id: string;
   pin_hash: string;
-  role: 'owner' | 'economist' | 'admin' | 'supervisor' | 'clerk';
+  role: string;
   pin_name: string;
   is_active: boolean;
   failed_attempts: number;
   blocked_until: string | null;
   created_at: string;
+}
+
+export interface Role {
+  id: string;
+  user_id: string;
+  name: string;
+  modules: string[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export const ROLE_LABELS: Record<string, string> = {
@@ -209,7 +217,7 @@ export const ROLE_LABELS: Record<string, string> = {
 
 export const ROLE_MODULES: Record<string, string[]> = {
   owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr'],
   admin: ['inventory', 'movements', 'transit'],
   supervisor: ['sales', 'closings'],
   clerk: ['sales'],
@@ -232,6 +240,49 @@ export const MODULE_ROLES: Record<string, string[]> = {
   '/action-logs': ['owner', 'economist'],
 };
 
+// Módulo requerido por ruta de dashboard (verificación offline / gating).
+export const MODULE_BY_PATH: Record<string, string> = {
+  '/inventory': 'inventory',
+  '/movements': 'movements',
+  '/transit': 'transit',
+  '/sales': 'sales',
+  '/closings': 'closings',
+  '/hr': 'hr',
+  '/recipes': 'recipes',
+  '/consumption': 'consumption',
+  '/analysis': 'analysis',
+  '/charts': 'charts',
+  '/filtered': 'filtered',
+  '/settings': 'settings',
+  '/action-logs': 'hr',
+};
+
+function normalizeRoleModules(modules: any): string[] {
+  if (Array.isArray(modules)) return modules.map(String);
+  try {
+    const parsed = JSON.parse(String(modules));
+    if (Array.isArray(parsed)) return parsed.map(String);
+  } catch { /* noop */ }
+  return [];
+}
+
+// Label de un rol desde la tabla `roles` (con fallback a los mapas legados).
+export function getRoleLabel(roleId: string): string {
+  const role = useDatabaseStore.getState().roles.find(r => r.id === roleId);
+  if (role?.name) return role.name;
+  return ROLE_LABELS[roleId] || roleId;
+}
+
+// Módulos de un rol desde la tabla `roles` (con fallback a los mapas legados).
+export function getRoleModules(roleId: string): string[] {
+  const role = useDatabaseStore.getState().roles.find(r => r.id === roleId);
+  if (role?.modules) {
+    const mods = normalizeRoleModules(role.modules);
+    if (mods.length) return mods;
+  }
+  return ROLE_MODULES[roleId] || [];
+}
+
 export interface Employee {
   id: string;
   user_id: string;
@@ -244,6 +295,12 @@ export interface Employee {
   category?: string;
   photo_url?: string;
   hire_date?: string;
+  person_type?: 'employee' | 'partner';
+  base_contribution?: number;
+  contract_type?: 'indefinite' | 'fixed' | 'probation';
+  contract_end_date?: string;
+  expediente?: number;
+  vacation_balance?: number;
   created_at: string;
 }
 
@@ -314,6 +371,10 @@ export interface PayrollConfig {
   tax_rate: number;
   special_contribution_rate: number;
   last_calculated_month?: string;
+  // Fondo de tiempo estimado (horas/mes) para la tasa salarial horaria.
+  monthly_hours?: number;
+  // Días de vacaciones que se acumulan por mes (saldo estilo Versat).
+  vacation_accrual_days?: number;
   created_at: string;
   updated_at: string;
 }
@@ -337,12 +398,96 @@ export interface PayrollEntry {
   vacation_base: number;
   employer_contribution: number;
   is_custom: boolean;
+  // Conceptos de nómina (Fase 3)
+  overtime_hours?: number;
+  overtime_type?: 'diurna' | 'nocturna' | 'descanso' | 'feriado';
+  overtime_pay?: number;
+  bonus?: number;
+  // Captación pre-nómina / pago por horas reales
+  worked_hours?: number;
+  hourly_rate?: number;
+  days_paid?: number;
+  vacation_pay?: number;
+  advances?: number;
+  loan_deduction?: number;
+  other_deductions?: number;
+  gross_salary?: number;
   created_at: string;
   updated_at: string;
 }
 
+export interface EmployeeLoan {
+  id: string;
+  user_id: string;
+  employee_id: string;
+  total_amount: number;
+  monthly_payment: number;
+  balance: number;
+  start_date?: string;
+  status: 'active' | 'paid';
+  // Tipo de deducción/retención (préstamo, inasistencia, sanción, etc.)
+  deduction_type?: 'prestamo' | 'credito_bancario' | 'inasistencia' | 'sancion' | 'rotura_equipo' | 'otro';
+  reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollDraft {
+  id: string;
+  user_id: string;
+  month: number;
+  year: number;
+  employee_id: string;
+  include: number;
+  worked_hours: number;
+  hourly_rate: number;
+  bonus: number;
+  advances: number;
+  retention: number;
+  vacation_days: number;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollPeriod {
+  id: string;
+  user_id: string;
+  month: number;
+  year: number;
+  status: 'draft' | 'applied';
+  applied_at?: string;
+  applied_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayrollLiquidation {
+  id: string;
+  user_id: string;
+  employee_id: string;
+  employee_name: string;
+  base_salary: number;
+  hire_date?: string;
+  end_date?: string;
+  months_worked: number;
+  vacation_accumulated: number;
+  vacation_taken: number;
+  vacation_pending: number;
+  vacation_pay: number;
+  severance_months: number;
+  severance_pay: number;
+  notice_days: number;
+  notice_pay: number;
+  gross_total: number;
+  cess: number;
+  iip: number;
+  net_total: number;
+  created_at: string;
+}
+
 const capitalize = (str: string) =>
-  str.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  str.trim().toLowerCase().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
 const formatBlockRemaining = (seconds: number): string => {
   const s = Math.max(1, Math.ceil(seconds));
@@ -421,7 +566,7 @@ const queryWithRetry = async <T>(
     } catch (err: any) {
       const errMsg = err?.message || '';
       const isRetryable = RETRYABLE_ERRORS.some(msg => errMsg.includes(msg));
-      
+
       if (attempt < maxRetries && isRetryable) {
         const backoff = Math.min(1000 * Math.pow(2, attempt), 8000);
         if (import.meta.env.DEV) {
@@ -446,11 +591,11 @@ const withCooldown = async <T>(
   const now = Date.now();
   const lastTime = lastOperationTime[operationKey] || 0;
   const timeSinceLastOp = now - lastTime;
-  
+
   if (timeSinceLastOp < operationCooldown) {
     await new Promise(resolve => setTimeout(resolve, operationCooldown - timeSinceLastOp));
   }
-  
+
   lastOperationTime[operationKey] = Date.now();
   return operation();
 };
@@ -480,17 +625,19 @@ interface DatabaseState {
   departments: Department[];
   payrollConfig: PayrollConfig | null;
   payrollEntries: PayrollEntry[];
+  employeeLoans: EmployeeLoan[];
+  payrollDrafts: PayrollDraft[];
+  payrollPeriod: PayrollPeriod | null;
+  payrollLiquidations: PayrollLiquidation[];
   pendingAccounts: PendingAccount[];
   accessPins: AccessPin[];
+  roles: Role[];
   actionLogs: any[];
   warehouses: Warehouse[];
   productWarehouse: ProductWarehouse[];
   currentWarehouseId: string | null;
   isLoading: boolean;
   isFetchingWarehouses: boolean;
-  syncQueueCount: number;
-  syncStatus: 'idle' | 'syncing' | 'complete' | 'error';
-  syncProgress: { processed: number; total: number } | null;
   employeesPage: number;
   employeesTotal: number;
   departmentsPage: number;
@@ -502,31 +649,26 @@ interface DatabaseState {
   employeeSearchTerm: string;
   departmentSearchTerm: string;
 
-  setSyncStatus: (status: 'idle' | 'syncing' | 'complete' | 'error') => void;
-  setSyncProgress: (progress: { processed: number; total: number } | null) => void;
-  refreshSyncQueueCount: () => Promise<void>;
-  compensateFailedSync: () => Promise<{ total: number; recovered: number; failed: number; details: { id: number; operation: string; recovered: boolean; error?: string }[] }>;
-
   fetchAll: (limit?: number) => Promise<void>;
   fetchMore: (limit?: number) => Promise<{ hasMore: boolean }>;
   addProduct: (product: Omit<Product, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => Promise<void>;
   updateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
-  
+
   addMovement: (movement: Omit<Movement, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   justifyMovement: (id: string, justification: string) => Promise<void>;
-  
+
   consumeFromTransit: (productId: string, quantity: number, reason?: string) => Promise<{ success: boolean; error?: string }>;
   cancelTransit: (transitItemId: string, quantity: number, reason: string) => Promise<{ success: boolean; error?: string }>;
   registerWasteFromTransit: (transitItemId: string, quantity: number, reason: string) => Promise<{ success: boolean; error?: string }>;
   registerManualConsumption: (transitItemId: string, quantity: number, note?: string) => Promise<{ success: boolean; error?: string }>;
-  
+
   addSale: (sale: Omit<Sale, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
-  
+
   addRecipe: (recipe: Omit<Recipe, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   updateRecipe: (id: string, updates: Partial<Recipe>) => Promise<void>;
   deleteRecipe: (id: string) => Promise<void>;
-  
+
   addEmployee: (employee: Omit<Employee, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   updateEmployee: (id: string, updates: Partial<Employee>) => Promise<void>;
   deleteEmployee: (id: string) => Promise<void>;
@@ -554,13 +696,16 @@ addItemsToPendingAccount: (accountId: string, items: { product_id: string; produ
   getPendingAccounts: () => Promise<void>;
   chargePendingAccount: (accountId: string, employeeId: string, employeeName: string, saleDate?: string, paymentMethod?: string, efectivo?: number, transferencia?: number, usd?: number, eur?: number) => Promise<{ success: boolean; error?: string }>;
 
-  saveAccessPin: (role: string, pin: string, name: string) => Promise<{ success: boolean; error?: string }>;
+  saveAccessPin: (params: { roleId?: string; roleName?: string; modules?: string[]; pin: string; name: string; pinId?: string }) => Promise<{ success: boolean; error?: string }>;
   toggleAccessPin: (pinId: string, isActive: boolean) => Promise<{ success: boolean; error?: string }>;
   deleteAccessPin: (pinId: string) => Promise<{ success: boolean; error?: string }>;
+  deleteRole: (roleId: string) => Promise<{ success: boolean; error?: string }>;
+  fetchRoles: () => Promise<void>;
   verifyPinForModule: (modulePath: string, pin: string) => Promise<{ success: boolean; error?: string; blocked?: boolean; remainingTime?: number }>;
   verifyPinSimple: (pin: string) => Promise<{ success: boolean; error?: string; blocked?: boolean; remainingTime?: number; role?: string }>;
   verifiedRole: string | null;
   verifiedRoleName: string | null;
+  verifiedRoleModules: string[] | null;
   clearVerifiedRole: () => void;
   fetchEmployeeDocuments: (employeeId: string) => Promise<void>;
   deleteEmployeeDocument: (id: string, fileUrl: string) => Promise<void>;
@@ -576,6 +721,22 @@ addItemsToPendingAccount: (accountId: string, items: { product_id: string; produ
   getPayrollEntries: (month: number, year: number) => Promise<void>;
   updatePayrollEntry: (id: string, updates: Partial<PayrollEntry>) => Promise<void>;
   regeneratePayrollEntry: (id: string) => Promise<void>;
+  // Captación pre-nómina y estados de la nómina
+  getPayrollDrafts: (month: number, year: number) => Promise<void>;
+  savePayrollDrafts: (month: number, year: number, rows: Partial<PayrollDraft>[]) => Promise<void>;
+  getPayrollPeriod: (month: number, year: number) => Promise<void>;
+  applyPayroll: (month: number, year: number) => Promise<void>;
+  reopenPayroll: (month: number, year: number) => Promise<void>;
+
+  getEmployeeLoans: () => Promise<void>;
+  addLoan: (loan: { employee_id: string; total_amount: number; monthly_payment: number; start_date?: string; deduction_type?: EmployeeLoan['deduction_type']; reason?: string }) => Promise<void>;
+  updateLoan: (id: string, updates: Partial<EmployeeLoan>) => Promise<void>;
+  deleteLoan: (id: string) => Promise<void>;
+  payLoanInstallment: (id: string) => Promise<void>;
+
+  getLiquidations: () => Promise<void>;
+  saveLiquidation: (liq: Omit<PayrollLiquidation, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
+  deleteLiquidation: (id: string) => Promise<void>;
 
   // Paginación optimizada
   getEmployeesPaginated: (page: number, search?: string, departmentId?: string, sortBy?: 'name' | 'salary', sortOrder?: 'asc' | 'desc') => Promise<void>;
@@ -586,13 +747,13 @@ addItemsToPendingAccount: (accountId: string, items: { product_id: string; produ
   getDepartmentsCount: (search?: string) => Promise<number>;
 
   forceRefreshData: () => Promise<void>;
-  
+
   // Warehouse management
   fetchWarehouses: () => Promise<void>;
   setCurrentWarehouse: (warehouseId: string) => void;
   fetchProductWarehouse: (skipAutoHeal?: boolean) => Promise<void>;
   updateProductWarehouseQuantity: (productId: string, warehouseId: string, quantity: number, skipAutoHeal?: boolean) => Promise<void>;
-  
+
   // Logging de acciones
   logAction: (module: string, action: string, details?: Record<string, any>) => Promise<void>;
   getActionLogs: () => Promise<void>;
@@ -613,7 +774,12 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   departments: [],
   payrollConfig: null,
   payrollEntries: [],
+  employeeLoans: [],
+  payrollDrafts: [],
+  payrollPeriod: null,
+  payrollLiquidations: [],
   accessPins: [],
+  roles: [],
   // Paginación
   employeesPage: 1,
   employeesTotal: 0,
@@ -627,6 +793,12 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   payrollYearFilter: 0,
   verifiedRole: typeof window !== 'undefined' ? localStorage.getItem('verifiedRole') : null,
   verifiedRoleName: typeof window !== 'undefined' ? localStorage.getItem('verifiedRoleName') : null,
+  verifiedRoleModules: typeof window !== 'undefined' ? (() => {
+    try {
+      const v = localStorage.getItem('verifiedModules');
+      return v ? JSON.parse(v) : null;
+    } catch { return null; }
+  })() : null,
   actionLogs: [],
   warehouses: [],
   productWarehouse: [],
@@ -634,26 +806,12 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   pendingAccounts: [],
   isLoading: true,
   isFetchingWarehouses: false,
-  syncQueueCount: 0,
-  syncStatus: 'idle',
-  syncProgress: null,
-
-  setSyncStatus: (status) => set({ syncStatus: status }),
-  setSyncProgress: (progress) => set({ syncProgress: progress }),
-  refreshSyncQueueCount: async () => {
-    const count = await getSyncQueueCount();
-    set({ syncQueueCount: count });
-  },
-  compensateFailedSync: async () => {
-    const result = await syncEngine.compensateFailedSync();
-    get().refreshSyncQueueCount();
-    return result;
-  },
 
   clearVerifiedRole: () => {
     localStorage.removeItem('verifiedRole');
     localStorage.removeItem('verifiedRoleName');
-    set({ verifiedRole: null, verifiedRoleName: null });
+    localStorage.removeItem('verifiedModules');
+    set({ verifiedRole: null, verifiedRoleName: null, verifiedRoleModules: null });
   },
 
   fetchAll: async (limit = 50) => {
@@ -665,42 +823,12 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
     const user = useAuthStore.getState().user;
     if (!user) {
-      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], pendingAccounts: [], accessPins: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
+      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollDrafts: [], payrollPeriod: null, payrollLiquidations: [], pendingAccounts: [], accessPins: [], roles: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
       _isFetchingAll = false;
       return;
     }
 
     set({ isLoading: true });
-
-    // Offline sin internet: restaurar desde caché Dexie sin tocar Supabase
-    if (!IS_ONLINE) {
-      logger.info('📥 Offline — restaurando desde caché local...');
-      await restoreFromCache(user.id);
-      set({ isLoading: false });
-      _isFetchingAll = false;
-      return;
-    }
-
-    // Verificar que realmente haya conectividad (IS_ONLINE a veces miente)
-    const hasRealNet = await (async () => {
-      try {
-        const result = await Promise.race([
-          supabase.from('products').select('id').limit(1).maybeSingle(),
-          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
-        ]);
-        return !result?.error;
-      } catch {
-        return false;
-      }
-    })();
-
-    if (!hasRealNet) {
-      logger.info('📥 IS_ONLINE=true pero sin internet real — restaurando caché...');
-      await restoreFromCache(user.id);
-      set({ isLoading: false });
-      _isFetchingAll = false;
-      return;
-    }
 
     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -711,8 +839,8 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     try {
       logger.info('📥 Cargando datos principales...');
       const [productsRes, movementsRes] = await Promise.all([
-        queryWithRetry(() => supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('movements').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('movements').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
       ]);
       productsData = productsRes.data || [];
       movementsData = movementsRes.data || [];
@@ -729,8 +857,8 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     try {
       logger.info('📥 Cargando ventas y recetas...');
       const [salesRes, recipesRes] = await Promise.all([
-        queryWithRetry(() => supabase.from('sales').select('*, sale_items(*)').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('recipes').select('*, recipe_ingredients(*)').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+        queryWithRetry(() => localDb.from('sales').select('*, sale_items(*)').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5000)),
+        queryWithRetry(() => localDb.from('recipes').select('*, recipe_ingredients(*)').eq('user_id', user.id).order('created_at', { ascending: false })),
       ]);
       salesData = salesRes.data?.map((s: any) => ({ ...s, items: s.sale_items || [] })) || [];
       recipesData = recipesRes.data?.map((r: any) => ({ ...r, ingredients: r.recipe_ingredients || [] })) || [];
@@ -749,10 +877,10 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     try {
       logger.info('📥 Cargando empleados y RRHH...');
       const [employeesRes, categoriesRes, hrDocsRes, departmentsRes] = await Promise.all([
-        queryWithRetry(() => supabase.from('employees').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('categories').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('hr_documents').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('departments').select('*').eq('user_id', user.id).order('name', { ascending: true })),
+        queryWithRetry(() => localDb.from('employees').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('categories').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('hr_documents').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5000)),
+        queryWithRetry(() => localDb.from('departments').select('*').eq('user_id', user.id).order('name', { ascending: true })),
       ]);
       employeesData = employeesRes.data || [];
       categoriesData = categoriesRes.data || [];
@@ -769,34 +897,43 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     let dailyClosingsData: any[] | null = null;
     let pendingData: any[] | null = null;
     let accessPinsData: any[] | null = null;
+    let rolesData: any[] | null = null;
     let actionLogsData: any[] | null = null;
     let payrollConfigData: any = null;
+    let employeeLoansData: any[] | null = null;
+    let liquidationsData: any[] | null = null;
     let warehousesData: any[] | null = null;
     let productWarehouseData: any[] | null = null;
 
     try {
       logger.info(' Cargando cierres y configuración (parte 1/2)...');
-      const [transitRes, dailyClosingsRes, pendingRes, accessPinsRes] = await Promise.all([
-        queryWithRetry(() => supabase.from('transit_items').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('daily_closings').select('*').eq('user_id', user.id).order('closing_date', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('pending_accounts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('access_pins').select('*').eq('user_id', user.id).limit(limit)),
+      const [transitRes, dailyClosingsRes, pendingRes, accessPinsRes, rolesRes] = await Promise.all([
+        queryWithRetry(() => localDb.from('transit_items').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('daily_closings').select('*').eq('user_id', user.id).order('closing_date', { ascending: false }).limit(5000)),
+        queryWithRetry(() => localDb.from('pending_accounts').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5000)),
+        queryWithRetry(() => localDb.from('access_pins').select('*').eq('user_id', user.id)),
+        queryWithRetry(() => localDb.from('roles').select('*').eq('user_id', user.id)),
       ]);
       transitItemsData = (transitRes.data || []).filter((t: any) => t.remaining > 0);
       dailyClosingsData = dailyClosingsRes.data || [];
       pendingData = (pendingRes.data || []).filter((p: any) => p.status === 'pending');
       accessPinsData = accessPinsRes.data || [];
+      rolesData = (rolesRes.data || []).map((r: any) => ({ ...r, modules: normalizeRoleModules(r.modules) }));
       await delay(100);
 
       logger.info('📥 Cargando cierres y configuración (parte 2/2)...');
-      const [actionLogsRes, payrollConfigRes, warehousesRes, productWarehouseRes] = await Promise.all([
-        queryWithRetry(() => supabase.from('action_logs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
-        queryWithRetry(() => supabase.from('payroll_config').select('*').eq('user_id', user.id).maybeSingle()),
-        queryWithRetry(() => supabase.from('warehouses').select('*').eq('user_id', user.id).order('name')),
-        queryWithRetry(() => supabase.from('product_warehouse').select('*')),
+      const [actionLogsRes, payrollConfigRes, employeeLoansRes, liquidationsRes, warehousesRes, productWarehouseRes] = await Promise.all([
+        queryWithRetry(() => localDb.from('action_logs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5000)),
+        queryWithRetry(() => localDb.from('payroll_config').select('*').eq('user_id', user.id).maybeSingle()),
+        queryWithRetry(() => localDb.from('employee_loans').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('payroll_liquidations').select('*').eq('user_id', user.id).order('created_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('warehouses').select('*').eq('user_id', user.id).order('name')),
+        queryWithRetry(() => localDb.from('product_warehouse').select('*')),
       ]);
       actionLogsData = actionLogsRes.data || [];
       payrollConfigData = payrollConfigRes.data || null;
+      employeeLoansData = employeeLoansRes.data || [];
+      liquidationsData = liquidationsRes.data || [];
       warehousesData = warehousesRes.data || [];
       productWarehouseData = productWarehouseRes.data || [];
     } catch (e) {
@@ -809,13 +946,18 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
     const effectiveTransitItems = transitItemsData ?? currentState.transitItems;
     const effectiveMovements = movementsData ?? currentState.movements;
 
-    // Recalcular quantity desde movements (más fiable que el valor Supabase/DB)
+    // Recalcular quantity desde movements (más fiable que el valor en BD).
+    // ENTRADA/AJUSTE siempre suman (el stock inicial legacy puede no tener warehouse_id).
+    // SALIDA/MERMA restan solo si tienen warehouse_id: las ventas/consumos desde tránsito
+    // (sin warehouse_id) no descontaron el almacén y no deben contarse aquí.
     const qtyFromMovements = new Map<string, number>();
     for (const m of effectiveMovements) {
       const current = qtyFromMovements.get(m.product_id) || 0;
       if (m.type === 'ENTRADA') qtyFromMovements.set(m.product_id, current + Number(m.quantity));
-      else if (m.type === 'SALIDA' || m.type === 'MERMA') qtyFromMovements.set(m.product_id, current - Number(m.quantity));
       else if (m.type === 'AJUSTE') qtyFromMovements.set(m.product_id, current + Number(m.quantity));
+      else if ((m.type === 'SALIDA' || m.type === 'MERMA') && (m as any).warehouse_id) {
+        qtyFromMovements.set(m.product_id, current - Number(m.quantity));
+      }
     }
 
     const productsWithTransit = (productsData ?? currentState.products).map(p => {
@@ -863,8 +1005,11 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       hrDocuments: hrDocsData ?? currentState.hrDocuments,
       departments: departmentsData ?? currentState.departments,
       payrollConfig: payrollConfigData !== null ? payrollConfigData : currentState.payrollConfig,
+      employeeLoans: employeeLoansData ?? currentState.employeeLoans,
+      payrollLiquidations: liquidationsData ?? currentState.payrollLiquidations,
       pendingAccounts: pendingData ?? currentState.pendingAccounts,
       accessPins: accessPinsData ?? currentState.accessPins,
+      roles: rolesData ?? currentState.roles,
       actionLogs: actionLogsData ?? currentState.actionLogs,
       warehouses: warehousesData ?? currentState.warehouses,
       productWarehouse: productWarehouseWithTransit,
@@ -873,28 +1018,6 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
     logger.info('✅ Datos cargados completamente');
     localStorage.setItem('lastSyncedAt', new Date().toISOString());
-
-    // Cache solo los grupos que se cargaron exitosamente (no pisar Dexie con nulls)
-    cacheAllData({
-      ...(productsData !== null && { products: productsWithTransit }),
-      ...(movementsData !== null && { movements: effectiveMovements }),
-      ...(warehousesData !== null && { warehouses: warehousesData }),
-      ...(productWarehouseData !== null && { productWarehouse: productWarehouseWithTransit }),
-      ...(transitItemsData !== null && { transitItems: transitItemsData }),
-      ...(salesData !== null && { sales: salesData }),
-      ...(recipesData !== null && { recipes: recipesData }),
-      ...(pendingData !== null && { pendingAccounts: pendingData }),
-      ...(dailyClosingsData !== null && { dailyClosings: dailyClosingsData }),
-      ...(employeesData !== null && { employees: employeesData }),
-      ...(categoriesData !== null && { categories: categoriesData }),
-      ...(accessPinsData !== null && { accessPins: accessPinsData }),
-    }, user.id);
-
-    // Si no hay productos ni movimientos, restaurar desde caché
-    if ((productsData === null || productsData.length === 0) && (movementsData === null || movementsData.length === 0)) {
-      logger.warn('⚠️ fetchAll no obtuvo productos ni movimientos — restaurando caché');
-      await restoreFromCache(user.id);
-    }
 
     // Auto-crear almacén "Almacén" para usuarios nuevos
     if (warehousesData === null || warehousesData.length === 0) {
@@ -928,16 +1051,16 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
       const [productsRes, movementsRes, salesRes, actionLogsRes] = await Promise.all([
         lastProduct 
-          ? supabase.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastProduct.created_at).limit(limit)
+          ? localDb.from('products').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastProduct.created_at).limit(limit)
           : Promise.resolve({ data: [], count: 0, error: null }),
         lastMovement
-          ? supabase.from('movements').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastMovement.created_at).limit(limit)
+          ? localDb.from('movements').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastMovement.created_at).limit(limit)
           : Promise.resolve({ data: [], count: 0, error: null }),
         lastSale
-          ? supabase.from('sales').select('*, sale_items(*)').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastSale.created_at).limit(limit)
+          ? localDb.from('sales').select('*, sale_items(*)').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastSale.created_at).limit(limit)
           : Promise.resolve({ data: [], count: 0, error: null }),
         lastLog
-          ? supabase.from('action_logs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastLog.created_at).limit(limit)
+          ? localDb.from('action_logs').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).lt('created_at', lastLog.created_at).limit(limit)
           : Promise.resolve({ data: [], count: 0, error: null }),
       ]);
 
@@ -1025,11 +1148,7 @@ addProduct: async (product) => {
         }
       }
 
-      await addToSyncQueue({ operation: 'addProduct', table: 'products', payload });
-      get().refreshSyncQueueCount();
-      try { await db.products.put(productData).catch(() => {}); } catch {}
-      if (pwEntry) try { await db.productWarehouse.put(pwEntry).catch(() => {}); } catch {}
-      if (offlineMovement) try { await db.movements.put(offlineMovement).catch(() => {}); } catch {}
+
       if (!silent) {
         toast.success('Producto guardado localmente — se sincronizará al reconectar');
       }
@@ -1043,7 +1162,7 @@ addProduct: async (product) => {
     trackLocalCreation(productId);
     try {
       const { data, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('products')
           .insert(productData)
           .select()
@@ -1061,9 +1180,9 @@ addProduct: async (product) => {
 
       if (Number(product.quantity) > 0) {
         const mainWarehouse = get().warehouses.find(w => w.is_main) || get().warehouses[0];
-        
+
         const { error: movementError } = await queryWithRetry(() =>
-          supabase
+          localDb
             .from('movements')
             .insert({
               user_id: user.id,
@@ -1089,7 +1208,7 @@ addProduct: async (product) => {
       for (const warehouse of warehouses) {
         const initialQty = (warehouse.id === mainWarehouse?.id) ? Number(product.quantity) || 0 : 0;
         await queryWithRetry(() =>
-          supabase.from('product_warehouse').upsert({
+          localDb.from('product_warehouse').upsert({
             product_id: data.id,
             warehouse_id: warehouse.id,
             quantity: initialQty,
@@ -1135,15 +1254,13 @@ addProduct: async (product) => {
       set((state) => ({
         products: state.products.map(p => p.id === id ? { ...p, ...updates, updated_at: new Date().toISOString() } : p),
       }));
-      await addToSyncQueue({ operation: 'updateProduct', table: 'products', payload: { id, updates: capitalizedUpdates } });
-      get().refreshSyncQueueCount();
-      try { await db.products.put({ ...get().products.find(p => p.id === id), ...updates, updated_at: new Date().toISOString() } as any).catch(() => {}); } catch {}
+
       toast.success('Producto actualizado localmente (sin conexión)');
       return;
     }
 
     const { error } = await queryWithRetry(() =>
-      supabase
+      localDb
         .from('products')
         .update(capitalizedUpdates)
         .eq('id', id)
@@ -1151,8 +1268,7 @@ addProduct: async (product) => {
 
     if (error) {
       if (isNetworkError(error)) {
-        await addToSyncQueue({ operation: 'updateProduct', table: 'products', payload: { id, updates: capitalizedUpdates } });
-        get().refreshSyncQueueCount();
+
         toast.success('Producto actualizado localmente — se sincronizará al reconectar');
         return;
       }
@@ -1169,16 +1285,14 @@ addProduct: async (product) => {
       set((state) => ({
         products: state.products.map(p => p.id === id ? { ...p, is_active: false } : p),
       }));
-      await addToSyncQueue({ operation: 'deleteProduct', table: 'products', payload: { id } });
-      get().refreshSyncQueueCount();
+
       const productToDeactivate = get().products.find(p => p.id === id);
-      try { if (productToDeactivate) await db.products.put({ ...productToDeactivate, is_active: false }).catch(() => {}); } catch {}
       toast.success('Producto eliminado (sin conexión)');
       return;
     }
 
     const { error } = await queryWithRetry(() =>
-      supabase
+      localDb
         .from('products')
         .update({ is_active: false, updated_at: new Date().toISOString() })
         .eq('id', id)
@@ -1186,8 +1300,7 @@ addProduct: async (product) => {
 
     if (error) {
       if (isNetworkError(error)) {
-        await addToSyncQueue({ operation: 'deleteProduct', table: 'products', payload: { id } });
-        get().refreshSyncQueueCount();
+
         toast.success('Producto eliminado — se sincronizará al reconectar');
         return;
       }
@@ -1320,15 +1433,9 @@ addProduct: async (product) => {
 
       set((state) => ({ movements: [offlineMovement, ...state.movements] }));
 
-      await addToSyncQueue({ operation: 'addMovement', table: 'movements', payload: { ...movement, id: movementId, user_id: user.id, date: movementDate, created_at: offlineMovement.created_at, product_name: product.name } });
-      get().refreshSyncQueueCount();
+
       toast.success('Movimiento guardado localmente (sin conexión)');
-      try {
-        await db.movements.put(offlineMovement).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-        await db.transitItems.bulkPut(get().transitItems).catch(() => {});
-        await db.productWarehouse.bulkPut(get().productWarehouse).catch(() => {});
-      } catch {}
+
     };
 
     if (!IS_ONLINE) {
@@ -1339,27 +1446,24 @@ addProduct: async (product) => {
     const movementId = crypto.randomUUID();
     trackLocalCreation(movementId);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await localDb.auth.getSession();
       if (!session) throw new Error('Sesión expirada. Por favor, inicia sesión nuevamente.');
 
-      const { data: newMovement, error: movementError } = await queryWithRetry(() =>
-        supabase
-          .from('movements')
-          .insert({ ...movement, id: movementId, user_id: user.id, date: movementDate })
-          .select()
-          .single()
-      );
+      const movementRow = { ...movement, id: movementId, user_id: user.id, date: movementDate };
 
-      if (movementError) {
-        logger.error('Error addMovement:', movementError);
-        // Error de red (503 de customFetch) → guardar offline en vez de fallar
-        if (movementError.status === 503) {
-          logger.warn('⚠️ Error de red en addMovement — guardando offline');
-          await saveOffline();
-          return;
-        }
-        throw new Error(movementError.message || 'No se pudo registrar el movimiento');
-      }
+      // Todas las escrituras del movimiento van en UNA transacción (/api/query/batch):
+      // el servidor valida permisos por comando ANTES de ejecutar y revierte todo si
+      // alguno falla. Así no quedan movimientos fantasma ni stock a medias, sin
+      // importar qué combinación de módulos tenga el rol.
+      const commands: any[] = [
+        { table: 'movements', method: 'insert', data: movementRow },
+      ];
+
+      // Estado local optimista que se aplica SOLO si la transacción tuvo éxito.
+      let pwRowNew: { id: string; quantity: number } | null = null;
+      let pwQty: number | null = null;
+      let localTransitItem: TransitItem | null = null;
+      let localProductFields: Partial<Product> | null = null;
 
       if (movement.warehouse_id) {
         const pw = get().productWarehouse.find(
@@ -1367,138 +1471,73 @@ addProduct: async (product) => {
         );
         const currentQty = pw ? Number(pw.quantity) : 0;
 
+        let newQty = currentQty;
         if (movement.type === 'ENTRADA') {
-          logger.info('🔄 ENTRADA: Actualizando quantity para ENTRADA...');
-          const newQty = currentQty + Number(movement.quantity);
-          await get().updateProductWarehouseQuantity(movement.product_id, movement.warehouse_id, newQty, true);
-          logger.info('✅ ENTRADA: Quantity actualizado');
+          newQty = currentQty + Number(movement.quantity);
+        } else if (movement.type === 'SALIDA') {
+          if (currentQty < Number(movement.quantity)) {
+            throw new Error(`Stock insuficiente en almacén para ${product.name}: disponible ${currentQty}, solicitado ${movement.quantity}`);
+          }
+          newQty = currentQty - Number(movement.quantity);
+        } else if (movement.type === 'MERMA') {
+          if (currentQty < Number(movement.quantity)) {
+            throw new Error(`Stock insuficiente en almacén para ${product.name}: disponible ${currentQty}, solicitado ${movement.quantity}`);
+          }
+          newQty = Math.max(0, currentQty - Number(movement.quantity));
+        } else if (movement.type === 'AJUSTE') {
+          newQty = Math.max(0, currentQty + Number(movement.quantity));
+        }
 
+        // Escritura de la fila product_warehouse (update si existe, insert si no).
+        pwQty = newQty;
+        if (pw) {
+          commands.push({
+            table: 'product_warehouse',
+            method: 'update',
+            data: { quantity: newQty, updated_at: new Date().toISOString() },
+            filters: [{ op: 'eq', column: 'id', value: pw.id }],
+          });
+        } else {
+          pwRowNew = { id: crypto.randomUUID(), quantity: newQty };
+          commands.push({
+            table: 'product_warehouse',
+            method: 'insert',
+            data: {
+              id: pwRowNew.id,
+              product_id: movement.product_id,
+              warehouse_id: movement.warehouse_id,
+              quantity: newQty,
+              in_transit: 0,
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        if (movement.type === 'ENTRADA') {
           // Costo promedio ponderado sobre product.cost
           const unitCost = Number(movement.cost) || Number(product.cost);
           const currentTotalValue = currentQty * Number(product.cost);
           const newTotalValue = Number(movement.quantity) * unitCost;
           const totalQty = currentQty + Number(movement.quantity);
 
+          localProductFields = { quantity: Math.max(0, Number(product.quantity || 0) + Number(movement.quantity)) };
           if (totalQty > 0) {
             const newCost = (currentTotalValue + newTotalValue) / totalQty;
-            await get().updateProduct(movement.product_id, { cost: newCost });
+            commands.push({
+              table: 'products',
+              method: 'update',
+              data: { cost: newCost },
+              filters: [{ op: 'eq', column: 'id', value: product.id }],
+            });
+            localProductFields.cost = newCost;
           }
-
-          set((state) => ({
-            products: state.products.map(p =>
-              p.id === movement.product_id
-                ? { ...p, quantity: Math.max(0, Number(p.quantity || 0) + Number(movement.quantity)) }
-                : p
-            ),
-          }));
         } else if (movement.type === 'SALIDA') {
-          if (currentQty < Number(movement.quantity)) {
-            throw new Error(`Stock insuficiente en almacén para ${product.name}: disponible ${currentQty}, solicitado ${movement.quantity}`);
-          }
-          const newQty = currentQty - Number(movement.quantity);
-          await get().updateProductWarehouseQuantity(movement.product_id, movement.warehouse_id, newQty, true);
-          try {
-            const { data: newTransitItem, error: transitError } = await queryWithRetry(() =>
-              supabase
-                .from('transit_items')
-                .insert({
-                  user_id: user.id,
-                  product_id: movement.product_id,
-                  quantity: Number(movement.quantity),
-                  consumed: 0,
-                  remaining: Number(movement.quantity),
-                  reason: movement.reason || 'Enviado a cocina/preparacion',
-                  sent_date: movementDate,
-                  warehouse_id: movement.warehouse_id,
-                })
-                .select()
-                .single()
-            );
-
-            if (transitError) {
-              logger.error('❌ SALIDA: Error creando transit_item:', transitError);
-            } else if (newTransitItem) {
-              logger.info('✅ SALIDA: transit_item creado');
-              set((state) => ({
-                transitItems: [newTransitItem, ...state.transitItems],
-                products: state.products.map(p =>
-                  p.id === movement.product_id
-                    ? {
-                        ...p,
-                        quantity: Math.max(0, Number(p.quantity || 0) - Number(movement.quantity)),
-                        in_transit: Number(p.in_transit || 0) + Number(movement.quantity),
-                      }
-                    : p
-                ),
-              }));
-            }
-          } catch (err) {
-            logger.error('❌ SALIDA: Error en transit_item:', err);
-          }
-        } else if (movement.type === 'MERMA') {
-          if (currentQty < Number(movement.quantity)) {
-            throw new Error(`Stock insuficiente en almacén para ${product.name}: disponible ${currentQty}, solicitado ${movement.quantity}`);
-          }
-          await get().updateProductWarehouseQuantity(movement.product_id, movement.warehouse_id, Math.max(0, currentQty - Number(movement.quantity)), true);
-          set((state) => ({
-            products: state.products.map(p =>
-              p.id === movement.product_id
-                ? { ...p, quantity: Math.max(0, Number(p.quantity || 0) - Number(movement.quantity)) }
-                : p
-            ),
-          }));
-        } else if (movement.type === 'AJUSTE') {
-          await get().updateProductWarehouseQuantity(movement.product_id, movement.warehouse_id, Math.max(0, currentQty + Number(movement.quantity)), true);
-          set((state) => ({
-            products: state.products.map(p =>
-              p.id === movement.product_id
-                ? { ...p, quantity: Math.max(0, Number(p.quantity || 0) + Number(movement.quantity)) }
-                : p
-            ),
-          }));
-        }
-
-        set((state) => ({ movements: [newMovement, ...state.movements] }));
-        try {
-          const s = get();
-          await db.movements.put(newMovement).catch(() => {});
-          await db.products.bulkPut(s.products).catch(() => {});
-          await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-          await db.productWarehouse.bulkPut(s.productWarehouse).catch(() => {});
-        } catch {}
-        return;
-      }
-
-      let newQuantity = Number(product.quantity);
-      let newInTransit = Number(product.in_transit) || 0;
-      let newCost = Number(product.cost);
-
-      if (movement.type === 'ENTRADA') {
-        const unitCost = Number(movement.cost) || Number(product.cost);
-        const currentTotalValue = Number(product.quantity) * Number(product.cost);
-        const newTotalValue = Number(movement.quantity) * unitCost;
-        newQuantity = Number(product.quantity) + Number(movement.quantity);
-        
-        if (newQuantity > 0) {
-          newCost = (currentTotalValue + newTotalValue) / newQuantity;
-        }
-        
-        await get().updateProduct(movement.product_id, { quantity: newQuantity, cost: newCost });
-      } else if (movement.type === 'SALIDA') {
-        logger.info('🔄 SALIDA (sin warehouse): Actualizando quantity e in_transit...');
-        if (Number(product.quantity) < Number(movement.quantity)) {
-          throw new Error(`Stock insuficiente para ${product.name}: disponible ${product.quantity}, solicitado ${movement.quantity}`);
-        }
-        newQuantity = Number(product.quantity) - Number(movement.quantity);
-        newInTransit = newInTransit + Number(movement.quantity);
-        await get().updateProduct(movement.product_id, { quantity: newQuantity, in_transit: newInTransit });
-        logger.info('✅ SALIDA (sin warehouse): quantity e in_transit actualizados');
-        
-        logger.info('🔄 SALIDA (sin warehouse): Creando transit_item...');
-        const { data: newTransitItem, error: transitError } = await queryWithRetry(() =>
-          supabase
-            .from('transit_items')
-            .insert({
+          const transitItemId = crypto.randomUUID();
+          commands.push({
+            table: 'transit_items',
+            method: 'insert',
+            data: {
+              id: transitItemId,
               user_id: user.id,
               product_id: movement.product_id,
               quantity: Number(movement.quantity),
@@ -1506,42 +1545,145 @@ addProduct: async (product) => {
               remaining: Number(movement.quantity),
               reason: movement.reason || 'Enviado a cocina/preparacion',
               sent_date: movementDate,
-            })
-            .select()
-            .single()
-        );
-
-        if (transitError) {
-          logger.error('❌ SALIDA (sin warehouse): Error creando transit_item:', transitError);
-        } else {
-          logger.info('✅ SALIDA (sin warehouse): transit_item creado');
-          set((state) => ({ 
-            transitItems: [newTransitItem, ...state.transitItems],
-            products: state.products.map(p => 
-              p.id === movement.product_id ? { ...p, in_transit: newInTransit } : p
-            ),
-          }));
+              warehouse_id: movement.warehouse_id,
+            },
+          });
+          localTransitItem = {
+            id: transitItemId, user_id: user.id, product_id: movement.product_id,
+            quantity: Number(movement.quantity), consumed: 0, remaining: Number(movement.quantity),
+            reason: movement.reason || 'Enviado a cocina/preparacion', sent_date: movementDate,
+            created_at: new Date().toISOString(),
+            warehouse_id: movement.warehouse_id,
+          } as TransitItem;
+          localProductFields = {
+            quantity: Math.max(0, Number(product.quantity || 0) - Number(movement.quantity)),
+            in_transit: Number(product.in_transit || 0) + Number(movement.quantity),
+          };
+        } else if (movement.type === 'MERMA') {
+          localProductFields = { quantity: Math.max(0, Number(product.quantity || 0) - Number(movement.quantity)) };
+        } else if (movement.type === 'AJUSTE') {
+          localProductFields = { quantity: Math.max(0, Number(product.quantity || 0) + Number(movement.quantity)) };
         }
-      } else if (movement.type === 'MERMA') {
-        if (Number(product.quantity) < Number(movement.quantity)) {
-          throw new Error(`Stock insuficiente para ${product.name}: disponible ${product.quantity}, solicitado ${movement.quantity}`);
-        }
-        newQuantity = Number(product.quantity) - Number(movement.quantity);
-        
-        await get().updateProduct(movement.product_id, { quantity: newQuantity });
-      } else if (movement.type === 'AJUSTE') {
-        newQuantity = Number(product.quantity) + Number(movement.quantity);
 
-        await get().updateProduct(movement.product_id, { quantity: Math.max(0, newQuantity) });
+      } else {
+        // Sin almacén: los totales viven directamente en products.
+        let newQuantity = Number(product.quantity);
+        let newInTransit = Number(product.in_transit) || 0;
+        const productData: Record<string, any> = {};
+
+        if (movement.type === 'ENTRADA') {
+          const unitCost = Number(movement.cost) || Number(product.cost);
+          const currentTotalValue = Number(product.quantity) * Number(product.cost);
+          const newTotalValue = Number(movement.quantity) * unitCost;
+          newQuantity = Number(product.quantity) + Number(movement.quantity);
+
+          if (newQuantity > 0) {
+            productData.cost = (currentTotalValue + newTotalValue) / newQuantity;
+          }
+        } else if (movement.type === 'SALIDA') {
+          if (Number(product.quantity) < Number(movement.quantity)) {
+            throw new Error(`Stock insuficiente para ${product.name}: disponible ${product.quantity}, solicitado ${movement.quantity}`);
+          }
+          newQuantity = Number(product.quantity) - Number(movement.quantity);
+          newInTransit = newInTransit + Number(movement.quantity);
+          productData.in_transit = newInTransit;
+        } else if (movement.type === 'MERMA') {
+          if (Number(product.quantity) < Number(movement.quantity)) {
+            throw new Error(`Stock insuficiente para ${product.name}: disponible ${product.quantity}, solicitado ${movement.quantity}`);
+          }
+          newQuantity = Number(product.quantity) - Number(movement.quantity);
+        } else if (movement.type === 'AJUSTE') {
+          newQuantity = Number(product.quantity) + Number(movement.quantity);
+        }
+
+        productData.quantity = Math.max(0, newQuantity);
+        commands.push({
+          table: 'products',
+          method: 'update',
+          data: productData,
+          filters: [{ op: 'eq', column: 'id', value: product.id }],
+        });
+
+        localProductFields = {};
+        if (productData.cost !== undefined) localProductFields.cost = productData.cost;
+        if (productData.in_transit !== undefined) localProductFields.in_transit = productData.in_transit;
+        localProductFields.quantity = Math.max(0, newQuantity);
+
+        if (movement.type === 'SALIDA') {
+          const transitItemId = crypto.randomUUID();
+          const transitReason = movement.reason || 'Enviado a cocina/preparacion';
+          commands.push({
+            table: 'transit_items',
+            method: 'insert',
+            data: {
+              id: transitItemId,
+              user_id: user.id,
+              product_id: movement.product_id,
+              quantity: Number(movement.quantity),
+              consumed: 0,
+              remaining: Number(movement.quantity),
+              reason: transitReason,
+              sent_date: movementDate,
+            },
+          });
+          localTransitItem = {
+            id: transitItemId, user_id: user.id, product_id: movement.product_id,
+            quantity: Number(movement.quantity), consumed: 0, remaining: Number(movement.quantity),
+            reason: transitReason, sent_date: movementDate,
+            created_at: new Date().toISOString(),
+          } as TransitItem;
+        }
       }
 
-      set((state) => ({ movements: [newMovement, ...state.movements] }));
-      try {
-        const s = get();
-        await db.movements.put(newMovement).catch(() => {});
-        await db.products.bulkPut(s.products).catch(() => {});
-        await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-      } catch {}
+      // Ejecutar TODAS las escrituras en una única transacción:
+      // o se guarda el movimiento completo, o no se guarda nada.
+      const batchRes = await localDb.batch(commands);
+
+      if (batchRes.error) {
+        logger.error('Error addMovement (batch):', batchRes.error);
+        // Error de red (503 del shim local) → guardar offline en vez de fallar
+        if ((batchRes.error as any)?.status === 503) {
+          logger.warn('⚠️ Error de red en addMovement — guardando offline');
+          await saveOffline();
+          return;
+        }
+        throw new Error(batchRes.error.message || 'No se pudo registrar el movimiento');
+      }
+
+      // Éxito: aplicar el estado optimista calculado SOLO ahora.
+      if (localProductFields && Object.keys(localProductFields).length > 0) {
+        set((state) => ({
+          products: state.products.map(p =>
+            p.id === movement.product_id ? { ...p, ...localProductFields! } : p
+          ),
+        }));
+      }
+      if (localTransitItem) {
+        set((state) => ({ transitItems: [localTransitItem, ...state.transitItems] }));
+      }
+      if (pwRowNew) {
+        set((state) => ({
+          productWarehouse: [...state.productWarehouse, {
+            id: pwRowNew.id,
+            product_id: movement.product_id,
+            warehouse_id: movement.warehouse_id as string,
+            quantity: pwRowNew.quantity,
+            in_transit: 0,
+            updated_at: new Date().toISOString(),
+          }],
+        }));
+      } else if (pwQty !== null) {
+        set((state) => ({
+          productWarehouse: state.productWarehouse.map(pw =>
+            pw.product_id === movement.product_id && pw.warehouse_id === movement.warehouse_id
+              ? { ...pw, quantity: pwQty }
+              : pw
+          ),
+        }));
+      }
+
+      set((state) => ({ movements: [{ ...movementRow, created_at: new Date().toISOString() } as Movement, ...state.movements] }));
+
     } catch (error: any) {
       const errMsg = error?.message || '';
       const isNetworkErr = errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('net::ERR_') || errMsg.includes('TypeError');
@@ -1564,18 +1706,13 @@ addProduct: async (product) => {
           m.id === id ? { ...m, status: 'JUSTIFICADO', justification, justification_date: new Date().toISOString() } : m
         ),
       }));
-      await addToSyncQueue({
-        operation: 'justifyMovement', table: 'movements',
-        payload: { id, justification },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.movements.put(get().movements.find((m: any) => m.id === id) as any).catch(() => {}); } catch {}
+
       return;
     }
 
     try {
       const { error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('movements')
           .update({ 
             status: 'JUSTIFICADO', 
@@ -1607,7 +1744,7 @@ addProduct: async (product) => {
       const user = useAuthStore.getState().user;
       if (!user) return;
 
-      const { data, error } = await supabase
+      const { data, error } = await localDb
         .from('warehouses')
         .select('*')
         .eq('user_id', user.id)
@@ -1622,7 +1759,7 @@ addProduct: async (product) => {
 
       // Auto-crear Almacén Principal si no existe ninguno
       if (warehouses.length === 0) {
-        const { data: newWarehouse, error: createError } = await supabase
+        const { data: newWarehouse, error: createError } = await localDb
           .from('warehouses')
           .insert({ user_id: user.id, name: 'Almacén', is_main: true })
           .select()
@@ -1633,7 +1770,7 @@ addProduct: async (product) => {
             logger.error('Error auto-creating warehouse:', createError);
           }
           // Duplicado por race condition: re-fetch
-          const { data: existing } = await supabase
+          const { data: existing } = await localDb
             .from('warehouses')
             .select('*')
             .eq('user_id', user.id)
@@ -1664,26 +1801,26 @@ addProduct: async (product) => {
   fetchProductWarehouse: async (skipAutoHeal: boolean = false) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
-    
-    const { data, error } = await supabase
+
+    const { data, error } = await localDb
       .from('product_warehouse')
       .select('*');
-    
+
     if (error) {
       logger.error('Error fetching product_warehouse:', error);
       return;
     }
-    
+
     if (skipAutoHeal) {
       set({ productWarehouse: data as ProductWarehouse[] });
       return;
     }
-    
+
     // Auto-heal: detectar y corregir entradas faltantes o con valores incorrectos
     const warehouses = get().warehouses;
-    const products = get().products.filter(p => p.is_active !== false);
+    const products = get().products.filter(isActive);
     const mainWarehouse = warehouses.find(w => w.is_main) || warehouses[0];
-    
+
     let created = 0;
     for (const warehouse of warehouses) {
       for (const product of products) {
@@ -1691,10 +1828,10 @@ addProduct: async (product) => {
           (pw: any) => pw.product_id === product.id && pw.warehouse_id === warehouse.id
         );
         const expectedQty = (warehouse.id === mainWarehouse?.id) ? Number(product.quantity) || 0 : 0;
-        
+
         // Crear o actualizar: siempre hace UPSERT para corregir valores incorrectos
         if (!existingPw || Number(existingPw.quantity) !== expectedQty) {
-          await supabase.from('product_warehouse').upsert({
+          await localDb.from('product_warehouse').upsert({
             product_id: product.id,
             warehouse_id: warehouse.id,
             quantity: expectedQty,
@@ -1704,11 +1841,11 @@ addProduct: async (product) => {
         }
       }
     }
-    
+
     if (created > 0) {
       logger.info(`🔧 Auto-heal product_warehouse: ${created} entradas creadas`);
       // Volver a fetch si se crearon nuevas
-      const { data: newData } = await supabase.from('product_warehouse').select('*');
+      const { data: newData } = await localDb.from('product_warehouse').select('*');
       set({ productWarehouse: newData as ProductWarehouse[] });
     } else {
       set({ productWarehouse: data as ProductWarehouse[] });
@@ -1717,18 +1854,18 @@ addProduct: async (product) => {
 
   updateProductWarehouseQuantity: async (productId: string, warehouseId: string, quantity: number, skipAutoHeal: boolean = false) => {
     const existing = get().productWarehouse.find(pw => pw.product_id === productId && pw.warehouse_id === warehouseId);
-    
+
     if (existing) {
-      await supabase
+      await localDb
         .from('product_warehouse')
         .update({ quantity, updated_at: new Date().toISOString() })
         .eq('id', existing.id);
     } else {
-      await supabase
+      await localDb
         .from('product_warehouse')
         .insert({ product_id: productId, warehouse_id: warehouseId, quantity, in_transit: 0 });
     }
-    
+
     await get().fetchProductWarehouse(skipAutoHeal);
   },
 
@@ -1754,7 +1891,7 @@ addProduct: async (product) => {
         const transitAvailable = transitMap.get(item.product_id) || 0;
         const product = productsMap.get(item.product_id);
         const productName = product?.name || 'producto';
-        
+
         if (transitAvailable < item.quantity) {
           return { 
             success: false, 
@@ -1766,10 +1903,10 @@ addProduct: async (product) => {
         for (const ing of item.recipe_snapshot.ingredients) {
           const transitAvailable = transitMap.get(ing.product_id) || 0;
           const needed = ing.quantity * item.quantity;
-          
+
           const ingProduct = productsMap.get(ing.product_id);
           const ingProductName = ingProduct?.name || 'ingrediente';
-          
+
           if (transitAvailable < needed) {
             return { 
               success: false, 
@@ -1818,7 +1955,6 @@ addProduct: async (product) => {
       }));
       const saleWithItems = { ...tempSale, items: saleItems };
       set((state) => ({ sales: [saleWithItems, ...state.sales] }));
-      try { await db.sales.put(saleWithItems).catch(() => {}); } catch {}
       for (const ci of itemsToConsume) {
         set((state) => {
           let remainingLocal = ci.qtyNeeded;
@@ -1842,16 +1978,12 @@ addProduct: async (product) => {
           };
         });
       }
-      const unfilteredTransitItems = get().transitItems;
+
       set((state) => ({
         transitItems: state.transitItems.filter(t => t.remaining > 0)
       }));
-      try {
-        await db.transitItems.bulkPut(unfilteredTransitItems).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-      } catch {}
-      await addToSyncQueue({ operation: 'addSale', table: 'sales', payload: { sale: tempSale, sale_items: saleItems, tempId, itemsToConsume } });
-      get().refreshSyncQueueCount();
+
+
       toast.success('Venta guardada localmente (sin conexión)');
       return { success: true };
     }
@@ -1859,36 +1991,25 @@ addProduct: async (product) => {
     const saleId = crypto.randomUUID();
     trackLocalCreation(saleId);
     try {
-      const { data: newSale, error: saleError } = await queryWithRetry(() =>
-        supabase
-          .from('sales')
-          .insert({ 
-            id: saleId,
-            user_id: user.id, 
-            employee_id: sale.employee_id,
-            total_amount: sale.total_amount,
-            date: sale.date,
-            sale_type: sale.sale_type,
-            is_account_house: sale.is_account_house || false,
-            notes: sale.notes,
-            discount: sale.discount,
-            payment_method: sale.payment_method || null,
-            efectivo: sale.efectivo || 0,
-            transferencia: sale.transferencia || 0,
-            usd: sale.usd || 0,
-            eur: sale.eur || 0,
-          })
-          .select()
-          .single()
-      );
-
-      if (saleError) {
-        logger.error('Error adding sale:', saleError);
-        return { success: false, error: 'Error al registrar la venta' };
-      }
+      const saleRow = {
+        id: saleId,
+        user_id: user.id,
+        employee_id: sale.employee_id,
+        total_amount: sale.total_amount,
+        date: sale.date,
+        sale_type: sale.sale_type,
+        is_account_house: sale.is_account_house || false,
+        notes: sale.notes,
+        discount: sale.discount,
+        payment_method: sale.payment_method || null,
+        efectivo: sale.efectivo || 0,
+        transferencia: sale.transferencia || 0,
+        usd: sale.usd || 0,
+        eur: sale.eur || 0,
+      };
 
       const saleItems = sale.items.map(item => ({
-        sale_id: newSale.id,
+        sale_id: saleId,
         product_id: item.product_id,
         quantity: item.quantity,
         unit_cost: item.unit_cost,
@@ -1898,35 +2019,47 @@ addProduct: async (product) => {
         recipe_snapshot: item.recipe_snapshot,
       }));
 
-      const { error: itemsError } = await queryWithRetry(() =>
-        supabase.from('sale_items').insert(saleItems)
-      );
-
-      if (itemsError) {
-        logger.error('Error adding sale items:', itemsError);
-        try { await supabase.from('sales').delete().eq('id', newSale.id); } catch {}
-        return { success: false, error: 'Error al registrar los ítems de la venta' };
+      // Insertar venta + ítems en UNA transacción: si fallan los ítems se revierte
+      // la venta (antes se borraba a mano, ahora es atómico).
+      const batchCommands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: any[]; onConflict?: string }[] = [
+        { table: 'sales', method: 'insert', data: saleRow },
+      ];
+      if (saleItems.length) {
+        batchCommands.push({ table: 'sale_items', method: 'insert', data: saleItems });
+      }
+      const batchSale = await localDb.batch(batchCommands);
+      if (batchSale.error) {
+        logger.error('Error adding sale:', batchSale.error);
+        return { success: false, error: batchSale.error.message || 'Error al registrar la venta' };
       }
 
+      const newSale = { ...saleRow, id: saleId, created_at: new Date().toISOString() } as any;
+
+      // Consumir del tránsito. Si falla, se revierte la venta recién creada para
+      // no dejar "venta registrada sin stock descontado".
+      let consumptionError: string | null = null;
       for (const item of sale.items) {
+        if (consumptionError) break;
         if (!item.is_recipe) {
-          await get().consumeFromTransit(item.product_id, item.quantity, `Venta #${newSale.id.slice(0, 8)}`);
+          const r = await get().consumeFromTransit(item.product_id, item.quantity, `Venta #${saleId.slice(0, 8)}`);
+          if (!r.success) consumptionError = r.error || 'Error al consumir del tránsito';
         } else if (item.is_recipe && item.recipe_snapshot) {
           for (const ing of item.recipe_snapshot.ingredients) {
-            await get().consumeFromTransit(ing.product_id, ing.quantity * item.quantity, `Venta #${newSale.id.slice(0, 8)} (Receta: ${item.recipe_snapshot.name})`);
+            const r = await get().consumeFromTransit(ing.product_id, ing.quantity * item.quantity, `Venta #${saleId.slice(0, 8)} (Receta: ${item.recipe_snapshot.name})`);
+            if (!r.success) { consumptionError = r.error || 'Error al consumir del tránsito'; break; }
           }
         }
       }
 
+      if (consumptionError) {
+        try { await localDb.from('sales').delete().eq('id', saleId); } catch {}
+        try { await localDb.from('sale_items').delete().eq('sale_id', saleId); } catch {}
+        return { success: false, error: consumptionError };
+      }
+
       const saleWithItems = { ...newSale, items: saleItems };
       set((state) => ({ sales: [saleWithItems, ...state.sales] }));
-      try {
-        const s = get();
-        await db.sales.put(saleWithItems).catch(() => {});
-        await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-        await db.movements.bulkPut(s.movements).catch(() => {});
-        await db.products.bulkPut(s.products).catch(() => {});
-      } catch {}
+
       return { success: true };
     } catch (error: any) {
       logger.error('Error en addSale:', error);
@@ -1979,17 +2112,9 @@ addProduct: async (product) => {
           p.id === productId ? { ...p, in_transit: Math.max(0, Number(p.in_transit || 0) - consumedQty) } : p
         ),
       }));
-      for (const ci of consumptionItems) {
-        await addToSyncQueue({
-          operation: 'registerManualConsumption', table: 'transit_items',
-          payload: { transitItemId: ci.transitItemId, quantity: ci.quantity, note: reason || 'Consumo desde tránsito', userId: user.id, productId, productName: product.name },
-        });
-      }
-      get().refreshSyncQueueCount();
-      try {
-        await db.transitItems.bulkPut(updatedTransitItems).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-      } catch {}
+
+
+
       return { success: true };
     }
 
@@ -2010,7 +2135,7 @@ addProduct: async (product) => {
 
         const { error: te } = await withTimeout(
           Promise.resolve(
-            supabase
+            localDb
               .from('transit_items')
               .update({ remaining: newRemaining, consumed: newConsumed, updated_at: new Date().toISOString() })
               .eq('id', item.id)
@@ -2024,11 +2149,20 @@ addProduct: async (product) => {
         return { success: false, error: 'No habia suficiente cantidad en transito' };
       }
 
-      const newTotalInTransit = updatedItems.reduce((sum, u) => sum + u.newRemaining, 0);
+      // Tránsito total restante del producto tras el consumo: suma de TODOS los
+      // transit_items (los consumidos con su nuevo remaining y los no tocados),
+      // para no perder stock "en tránsito" cuando hay más de un item.
+      const newTotalInTransit = get().transitItems
+        .filter(t => t.product_id === productId && t.remaining > 0)
+        .map(t => {
+          const updated = updatedItems.find(u => u.id === t.id);
+          return updated ? updated.newRemaining : t.remaining;
+        })
+        .reduce((sum, r) => sum + r, 0);
       let newMovement = null;
 
       const { data: movementData, error: movementError } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('movements')
           .insert({
             user_id: user.id,
@@ -2053,7 +2187,7 @@ addProduct: async (product) => {
       }
 
       const { error: productError } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('products')
           .update({ 
             in_transit: newTotalInTransit,
@@ -2088,12 +2222,7 @@ addProduct: async (product) => {
         };
       });
 
-      try {
-        const s = get();
-        await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-        await db.movements.bulkPut(s.movements).catch(() => {});
-        await db.products.bulkPut(s.products).catch(() => {});
-      } catch {}
+
 
       return { success: true };
     } catch (error: any) {
@@ -2135,6 +2264,7 @@ addProduct: async (product) => {
         cost: Number(product.cost),
         reason: `Devolución de tránsito: ${reason}`,
         status: 'NORMAL',
+        warehouse_id: transitItem.warehouse_id || undefined,
         date: new Date().toISOString(),
         created_at: new Date().toISOString(),
       };
@@ -2153,98 +2283,84 @@ addProduct: async (product) => {
           movements: [localMovement, ...state.movements],
         };
       });
-      await addToSyncQueue({ operation: 'cancelTransit', table: 'transit_items', payload: { transitItemId, quantity, reason, userId: user.id, productId: product.id, productName: product.name } });
-      get().refreshSyncQueueCount();
+
       toast.success('Cancelación guardada localmente (sin conexión)');
-      try {
-        await db.transitItems.bulkPut(get().transitItems).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-        await db.productWarehouse.bulkPut(get().productWarehouse).catch(() => {});
-        await db.movements.put(localMovement as any).catch(() => {});
-      } catch {}
+
       return { success: true };
     }
 
-    const { error: updateError } = await supabase
-      .from('transit_items')
-      .update({ remaining: newRemaining })
-      .eq('id', transitItemId);
+    // Todas las escrituras en una única transacción: ajustar tránsito, devolver
+    // stock y registrar el movimiento ENTRADA, o no se guarda nada.
+    const pwRow = transitItem.warehouse_id
+      ? get().productWarehouse.find(x => x.product_id === product.id && x.warehouse_id === transitItem.warehouse_id)
+      : undefined;
 
-    if (updateError) {
-      return { success: false, error: 'No se pudo actualizar el item en tránsito' };
+    const movementId = crypto.randomUUID();
+    const movementRow = {
+      id: movementId,
+      user_id: user.id,
+      product_id: product.id,
+      type: 'ENTRADA',
+      quantity,
+      unit: product.unit,
+      date: new Date().toISOString(),
+      cost: Number(product.cost),
+      reason: `Devolución de tránsito: ${reason}`,
+      status: 'NORMAL',
+      warehouse_id: transitItem.warehouse_id || null,
+    };
+
+    const commands: any[] = [
+      {
+        table: 'transit_items',
+        method: 'update',
+        data: { remaining: newRemaining },
+        filters: [{ op: 'eq', column: 'id', value: transitItemId }],
+      },
+      {
+        table: 'products',
+        method: 'update',
+        data: { in_transit: newInTransit, quantity: newQuantity },
+        filters: [{ op: 'eq', column: 'id', value: product.id }],
+      },
+      { table: 'movements', method: 'insert', data: movementRow },
+    ];
+
+    if (pwRow) {
+      commands.push({
+        table: 'product_warehouse',
+        method: 'update',
+        data: { quantity: Number(pwRow.quantity) + quantity, updated_at: new Date().toISOString() },
+        filters: [{ op: 'eq', column: 'id', value: pwRow.id }],
+      });
     }
 
-    const { error: productUpdateError } = await supabase
-      .from('products')
-      .update({ in_transit: newInTransit, quantity: newQuantity })
-      .eq('id', product.id);
+    const batchRes = await localDb.batch(commands);
 
-    if (productUpdateError) {
-      await supabase.from('transit_items').update({ remaining: transitItem.remaining, consumed: transitItem.consumed }).eq('id', transitItemId);
-      return { success: false, error: 'No se pudo devolver al stock' };
+    if (batchRes.error) {
+      logger.error('Error cancelTransit (batch):', batchRes.error);
+      return { success: false, error: batchRes.error.message || 'No se pudo registrar la devolución' };
     }
 
-    if (transitItem.warehouse_id) {
-      const { data: existingPW } = await supabase
-        .from('product_warehouse')
-        .select('*')
-        .eq('product_id', product.id)
-        .eq('warehouse_id', transitItem.warehouse_id)
-        .maybeSingle();
-
-      if (existingPW) {
-        await get().updateProductWarehouseQuantity(product.id, transitItem.warehouse_id, Number(existingPW.quantity) + quantity, true);
-      }
-    }
-
-    const { data: newMovement, error: movementError } = await supabase
-      .from('movements')
-      .insert({
-        user_id: user.id,
-        product_id: product.id,
-        type: 'ENTRADA',
-        quantity,
-        unit: product.unit,
-        date: new Date().toISOString(),
-        cost: Number(product.cost),
-        reason: `Devolución de tránsito: ${reason}`,
-        status: 'NORMAL',
-      })
-      .select()
-      .single();
-
-    if (movementError) {
-      if (import.meta.env.DEV) logger.error('Error registering return movement:', movementError);
-    }
-
-    set((state) => {
-      if (newRemaining <= 0) {
-        return {
-          transitItems: state.transitItems.filter(t => t.id !== transitItemId),
-          products: state.products.map(p =>
-            p.id === product.id ? { ...p, in_transit: newInTransit, quantity: newQuantity } : p
+    // Éxito: aplicar el estado local completo.
+    set((state) => ({
+      transitItems: newRemaining <= 0
+        ? state.transitItems.filter(t => t.id !== transitItemId)
+        : state.transitItems.map(t =>
+            t.id === transitItemId ? { ...t, remaining: newRemaining } : t
           ),
-          movements: newMovement ? [newMovement, ...state.movements] : state.movements,
-        };
-      }
-      return {
-        transitItems: state.transitItems.map(t =>
-          t.id === transitItemId ? { ...t, remaining: newRemaining } : t
-        ),
-        products: state.products.map(p =>
-          p.id === product.id ? { ...p, in_transit: newInTransit, quantity: newQuantity } : p
-        ),
-        movements: newMovement ? [newMovement, ...state.movements] : state.movements,
-      };
-    });
-
-    try {
-      const s = get();
-      await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-      await db.products.bulkPut(s.products).catch(() => {});
-      await db.movements.bulkPut(s.movements).catch(() => {});
-      await db.productWarehouse.bulkPut(s.productWarehouse).catch(() => {});
-    } catch {}
+      products: state.products.map(p =>
+        p.id === product.id ? { ...p, in_transit: newInTransit, quantity: newQuantity } : p
+      ),
+      productWarehouse: pwRow
+        ? state.productWarehouse.map(x =>
+            x.product_id === product.id && x.warehouse_id === transitItem.warehouse_id
+              ? { ...x, quantity: Number(x.quantity) + quantity }
+              : x
+          )
+        : state.productWarehouse,
+      movements: [{ ...movementRow, created_at: new Date().toISOString() } as Movement, ...state.movements],
+    }));
 
     return { success: true };
   },
@@ -2272,76 +2388,61 @@ addProduct: async (product) => {
         transitItems: state.transitItems.map(t => t.id === transitItemId ? { ...t, remaining: newRemaining } : t).filter(t => t.remaining > 0),
         products: state.products.map(p => p.id === product.id ? { ...p, in_transit: newInTransitVal } : p),
       }));
-      await addToSyncQueue({ operation: 'registerWasteFromTransit', table: 'transit_items', payload: { transitItemId, quantity, reason, userId: user.id, productId: product.id, productName: product.name } });
-      get().refreshSyncQueueCount();
+
       toast.success('Merma guardada localmente (sin conexión)');
-      try {
-        await db.transitItems.bulkPut(get().transitItems).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-      } catch {}
+
       return { success: true };
     }
 
-    const { error: updateError } = await supabase
-      .from('transit_items')
-      .update({ remaining: newRemaining })
-      .eq('id', transitItemId);
+    // Todas las escrituras en una única transacción: ajustar tránsito y registrar
+    // el movimiento MERMA, o no se guarda nada.
+    const movementId = crypto.randomUUID();
+    const movementRow = {
+      id: movementId,
+      user_id: user.id,
+      product_id: product.id,
+      type: 'MERMA',
+      quantity,
+      unit: product.unit,
+      date: new Date().toISOString(),
+      cost: Number(product.cost),
+      reason: `Merma en tránsito: ${reason}`,
+      status: 'NORMAL',
+    };
 
-    if (updateError) {
-      return { success: false, error: 'No se pudo actualizar el item en tránsito' };
+    const commands: any[] = [
+      {
+        table: 'transit_items',
+        method: 'update',
+        data: { remaining: newRemaining },
+        filters: [{ op: 'eq', column: 'id', value: transitItemId }],
+      },
+      {
+        table: 'products',
+        method: 'update',
+        data: { in_transit: newInTransitVal },
+        filters: [{ op: 'eq', column: 'id', value: product.id }],
+      },
+      { table: 'movements', method: 'insert', data: movementRow },
+    ];
+
+    const batchRes = await localDb.batch(commands);
+
+    if (batchRes.error) {
+      logger.error('Error registerWasteFromTransit (batch):', batchRes.error);
+      return { success: false, error: batchRes.error.message || 'No se pudo registrar la merma' };
     }
 
-    const { error: productUpdateError } = await supabase
-      .from('products')
-      .update({ in_transit: newInTransitVal })
-      .eq('id', product.id);
-
-    if (productUpdateError) {
-      await supabase.from('transit_items').update({ remaining: transitItem.remaining }).eq('id', transitItemId);
-      return { success: false, error: 'No se pudo actualizar el tránsito del producto' };
-    }
-
-    const { data: movementData, error: movementError } = await supabase
-      .from('movements')
-      .insert({
-        user_id: user.id,
-        product_id: product.id,
-        type: 'MERMA',
-        quantity,
-        unit: product.unit,
-        date: new Date().toISOString(),
-        cost: Number(product.cost),
-        reason: `Merma en tránsito: ${reason}`,
-        status: 'NORMAL',
-      })
-      .select()
-      .single();
-
-    if (movementError) {
-      if (import.meta.env.DEV) logger.error('Error registering waste movement:', movementError);
-    } else if (movementData) {
-      set((state) => ({ movements: [movementData, ...state.movements] }));
-    }
-
-    set((state) => {
-      const updatedTransitItems = state.transitItems
+    // Éxito: aplicar el estado local completo.
+    set((state) => ({
+      transitItems: state.transitItems
         .map(t => t.id === transitItemId ? { ...t, remaining: newRemaining } : t)
-        .filter(t => t.remaining > 0);
-
-      return {
-        transitItems: updatedTransitItems,
-        products: state.products.map(p =>
-          p.id === product.id ? { ...p, in_transit: newInTransitVal } : p
-        ),
-      };
-    });
-
-    try {
-      const s = get();
-      await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-      await db.movements.bulkPut(s.movements).catch(() => {});
-      await db.products.bulkPut(s.products).catch(() => {});
-    } catch {}
+        .filter(t => t.remaining > 0),
+      products: state.products.map(p =>
+        p.id === product.id ? { ...p, in_transit: newInTransitVal } : p
+      ),
+      movements: [{ ...movementRow, created_at: new Date().toISOString() } as Movement, ...state.movements],
+    }));
 
     return { success: true };
   },
@@ -2370,88 +2471,66 @@ addProduct: async (product) => {
         transitItems: state.transitItems.map(t => t.id === transitItemId ? { ...t, remaining: newRemaining, consumed: newConsumed } : t).filter(t => t.remaining > 0),
         products: state.products.map(p => p.id === product.id ? { ...p, in_transit: newInTransit } : p),
       }));
-      await addToSyncQueue({ operation: 'registerManualConsumption', table: 'transit_items', payload: { transitItemId, quantity, note, userId: user.id, productId: product.id, productName: product.name } });
-      get().refreshSyncQueueCount();
+
       toast.success('Consumo guardado localmente (sin conexión)');
-      try {
-        await db.transitItems.bulkPut(get().transitItems).catch(() => {});
-        await db.products.bulkPut(get().products).catch(() => {});
-      } catch {}
+
       return { success: true };
     }
 
-    const { error: updateError } = await supabase
-      .from('transit_items')
-      .update({ remaining: newRemaining, consumed: newConsumed })
-      .eq('id', transitItemId);
-
-    if (updateError) {
-      return { success: false, error: 'No se pudo actualizar el item en tránsito' };
-    }
-
-    const { error: productUpdateError } = await supabase
-      .from('products')
-      .update({ in_transit: newInTransit })
-      .eq('id', product.id);
-
-    if (productUpdateError) {
-      await supabase.from('transit_items').update({ remaining: transitItem.remaining, consumed: transitItem.consumed }).eq('id', transitItemId);
-      return { success: false, error: 'No se pudo actualizar el producto' };
-    }
-
+    // Todas las escrituras en una única transacción: ajustar tránsito y registrar
+    // el movimiento de consumo, o no se guarda nada.
     const isGastoVariable = product.is_gasto_variable === true;
 
-    const { data: movementData, error: movementError } = await supabase
-      .from('movements')
-      .insert({
-        user_id: user.id,
-        product_id: product.id,
-        type: 'SALIDA',
-        quantity,
-        unit: product.unit,
-        date: new Date().toISOString(),
-        cost: Number(product.cost),
-        reason: isGastoVariable ? 'Gasto variable registrado desde tránsito' : 'Consumo manual desde tránsito',
-        note: note || null,
-        is_consumo_directo: !isGastoVariable,
-        is_gasto_variable: isGastoVariable,
-        status: 'NORMAL',
-      })
-      .select()
-      .single();
+    const movementId = crypto.randomUUID();
+    const movementRow = {
+      id: movementId,
+      user_id: user.id,
+      product_id: product.id,
+      type: 'SALIDA',
+      quantity,
+      unit: product.unit,
+      date: new Date().toISOString(),
+      cost: Number(product.cost),
+      reason: isGastoVariable ? 'Gasto variable registrado desde tránsito' : 'Consumo manual desde tránsito',
+      note: note || null,
+      is_consumo_directo: !isGastoVariable,
+      is_gasto_variable: isGastoVariable,
+      status: 'NORMAL',
+    };
 
-    if (movementError) {
-      if (import.meta.env.DEV) logger.error('Error registering consumption movement:', movementError);
-    } else if (movementData) {
-      set((state) => ({ movements: [movementData, ...state.movements] }));
+    const commands: any[] = [
+      {
+        table: 'transit_items',
+        method: 'update',
+        data: { remaining: newRemaining, consumed: newConsumed },
+        filters: [{ op: 'eq', column: 'id', value: transitItemId }],
+      },
+      {
+        table: 'products',
+        method: 'update',
+        data: { in_transit: newInTransit },
+        filters: [{ op: 'eq', column: 'id', value: product.id }],
+      },
+      { table: 'movements', method: 'insert', data: movementRow },
+    ];
+
+    const batchRes = await localDb.batch(commands);
+
+    if (batchRes.error) {
+      logger.error('Error registerManualConsumption (batch):', batchRes.error);
+      return { success: false, error: batchRes.error.message || 'No se pudo registrar el consumo' };
     }
 
-    set((state) => {
-      const updatedTransitItems = state.transitItems
-        .map(t => {
-          if (t.id === transitItemId) {
-            return { ...t, remaining: newRemaining, consumed: newConsumed };
-          }
-          return t;
-        })
-        .filter(t => t.remaining > 0);
-
-      return {
-        transitItems: updatedTransitItems,
-        products: state.products.map(p =>
-          p.id === product.id
-            ? { ...p, in_transit: newInTransit }
-            : p
-        ),
-      };
-    });
-
-    try {
-      const s = get();
-      await db.transitItems.bulkPut(s.transitItems).catch(() => {});
-      await db.movements.bulkPut(s.movements).catch(() => {});
-      await db.products.bulkPut(s.products).catch(() => {});
-    } catch {}
+    // Éxito: aplicar el estado local completo.
+    set((state) => ({
+      transitItems: state.transitItems
+        .map(t => t.id === transitItemId ? { ...t, remaining: newRemaining, consumed: newConsumed } : t)
+        .filter(t => t.remaining > 0),
+      products: state.products.map(p =>
+        p.id === product.id ? { ...p, in_transit: newInTransit } : p
+      ),
+      movements: [{ ...movementRow, created_at: new Date().toISOString() } as Movement, ...state.movements],
+    }));
 
     return { success: true };
   },
@@ -2461,7 +2540,7 @@ addProduct: async (product) => {
     if (!user) return;
     if (!IS_ONLINE) return;
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('pending_accounts')
       .select('*')
       .eq('user_id', user.id)
@@ -2477,31 +2556,11 @@ addProduct: async (product) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
 
-    if (!IS_ONLINE) {
-      const id = crypto.randomUUID();
-      const offlineAccount: PendingAccount = {
-        id, user_id: user.id, client_name: clientName,
-        items: [], total_amount: 0, is_account_house: false,
-        sale_type: 'SALON', status: 'pending',
-        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      };
-      set((state) => ({ pendingAccounts: [offlineAccount, ...state.pendingAccounts] }));
-      await Promise.all([
-        addToSyncQueue({
-          operation: 'createPendingAccount', table: 'pending_accounts',
-          payload: { id, user_id: user.id, client_name: clientName, items: [], total_amount: 0, is_account_house: false, sale_type: 'SALON', status: 'pending', created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
-        }),
-        db.pendingAccounts.put(offlineAccount).catch(() => {}),
-      ]);
-      get().refreshSyncQueueCount();
-      return { success: true, accountId: id };
-    }
-
     const accountId = crypto.randomUUID();
     trackLocalCreation(accountId);
     try {
       const { data, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('pending_accounts')
           .insert({
             id: accountId,
@@ -2543,10 +2602,10 @@ addProduct: async (product) => {
     // Verificar tránsito disponible antes de agregar
     for (const item of items) {
       const product = get().products.find(p => p.id === item.product_id);
-      
+
       const itemIsRecipe = item.is_recipe;
       const itemRecipeSnapshot = item.recipe_snapshot;
-      
+
       if (itemIsRecipe && itemRecipeSnapshot?.ingredients) {
         // Si es receta, verificar cada ingrediente usando recipe_snapshot del item
         for (const ing of itemRecipeSnapshot.ingredients) {
@@ -2554,7 +2613,7 @@ addProduct: async (product) => {
             .filter(t => t.product_id === ing.product_id)
             .reduce((sum, t) => sum + t.remaining, 0);
           const needed = ing.quantity * item.quantity;
-          
+
           if (transitAvailable < needed) {
             const ingProduct = get().products.find(p => p.id === ing.product_id);
             return { 
@@ -2568,7 +2627,7 @@ addProduct: async (product) => {
         const transitAvailable = get().transitItems
           .filter(t => t.product_id === item.product_id)
           .reduce((sum, t) => sum + t.remaining, 0);
-        
+
         if (transitAvailable < item.quantity) {
           return { 
             success: false, 
@@ -2594,17 +2653,12 @@ addProduct: async (product) => {
             : a
         ),
       }));
-      await addToSyncQueue({
-        operation: 'addItemsToPendingAccount', table: 'pending_accounts',
-        payload: { accountId, items, isAccountHouse: accountIsAccountHouse, saleType: accountSaleType },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.put(get().pendingAccounts.find(a => a.id === accountId)!); } catch {}
+
       toast.success('Items agregados a la cuenta (sin conexión)');
       return { success: true };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({
         items: allItems,
@@ -2630,16 +2684,11 @@ addProduct: async (product) => {
           a.id === accountId ? { ...a, ...updates, updated_at: new Date().toISOString() } : a
         ),
       }));
-      await addToSyncQueue({
-        operation: 'updatePendingAccount', table: 'pending_accounts',
-        payload: { accountId, updates },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.put(get().pendingAccounts.find((a: any) => a.id === accountId) as any).catch(() => {}); } catch {}
+
       return { success: true };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({ ...updates, updated_at: new Date().toISOString() })
       .eq('id', accountId);
@@ -2667,17 +2716,12 @@ addProduct: async (product) => {
             : a
         ),
       }));
-      await addToSyncQueue({
-        operation: 'updatePendingAccountItems', table: 'pending_accounts',
-        payload: { accountId, items },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.put(get().pendingAccounts.find(a => a.id === accountId)!); } catch {}
+
       toast.success('Items actualizados (sin conexión)');
       return { success: true };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({
         items: items,
@@ -2697,10 +2741,10 @@ addProduct: async (product) => {
   togglePendingAccountType: async (accountId: string) => {
     const account = get().pendingAccounts.find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Cuenta no encontrada' };
-    
+
     const currentIsAccountHouse = account.is_account_house || false;
     const newIsAccountHouse = !currentIsAccountHouse;
-    
+
     const accountItems = account.items || [];
     const newTotal = newIsAccountHouse ? 0 : accountItems.reduce((sum, item) => sum + item.subtotal, 0);
 
@@ -2712,17 +2756,12 @@ addProduct: async (product) => {
             : a
         ),
       }));
-      await addToSyncQueue({
-        operation: 'togglePendingAccountType', table: 'pending_accounts',
-        payload: { accountId, is_account_house: newIsAccountHouse },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.put(get().pendingAccounts.find(a => a.id === accountId)!); } catch {}
+
       toast.success('Tipo de cuenta cambiado (sin conexión)');
       return { success: true };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({ 
         is_account_house: newIsAccountHouse,
@@ -2732,7 +2771,7 @@ addProduct: async (product) => {
       .eq('id', accountId);
 
     if (error) return { success: false, error: error.message };
-    
+
     await get().getPendingAccounts();
     return { success: true };
   },
@@ -2741,75 +2780,21 @@ deletePendingAccount: async (accountId: string) => {
     const account = get().pendingAccounts.find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Cuenta no encontrada' };
 
+    // Los ítems de una cuenta pendiente NUNCA se consumieron del tránsito al
+    // agregarse (solo se validó disponibilidad). El consumo ocurre al cobrar
+    // (chargePendingAccount → addSale). Por tanto, al eliminar la cuenta NO se
+    // devuelve stock al tránsito: eso inflaría stock fantasma.
+
     if (!IS_ONLINE) {
-      const transitRestores: { transitItemId: string; quantity: number }[] = [];
-      const accountItems = account.items || [];
-
-      for (const item of accountItems) {
-        const product = get().products.find(p => p.id === item.product_id);
-        if (product?.is_recipe && product.recipe_ingredients) {
-          for (const ing of product.recipe_ingredients) {
-            const qtyToReturn = ing.quantity * item.quantity;
-            const transitItem = get().transitItems.find(t => t.product_id === ing.product_id);
-            if (transitItem) {
-              transitRestores.push({ transitItemId: transitItem.id, quantity: qtyToReturn });
-            }
-          }
-        } else {
-          const qtyToReturn = item.quantity;
-          const transitItem = get().transitItems.find(t => t.product_id === item.product_id);
-          if (transitItem) {
-            transitRestores.push({ transitItemId: transitItem.id, quantity: qtyToReturn });
-          }
-        }
-      }
-
       set((state) => ({
         pendingAccounts: state.pendingAccounts.filter(a => a.id !== accountId),
-        transitItems: state.transitItems.map(t => {
-          const restore = transitRestores.find(r => r.transitItemId === t.id);
-          return restore ? { ...t, remaining: t.remaining + restore.quantity } : t;
-        }),
       }));
 
-      await addToSyncQueue({
-        operation: 'deletePendingAccount', table: 'pending_accounts',
-        payload: { accountId, transitRestores: transitRestores.map(r => ({ transitItemId: r.transitItemId, quantity: r.quantity })) },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.delete(accountId); } catch {}
+
       return { success: true };
     }
 
-    const accountItems = account.items || [];
-
-    for (const item of accountItems) {
-      const product = get().products.find(p => p.id === item.product_id);
-      
-      if (product?.is_recipe && product.recipe_ingredients) {
-        for (const ing of product.recipe_ingredients) {
-          const qtyToReturn = ing.quantity * item.quantity;
-          const transitItem = get().transitItems.find(t => t.product_id === ing.product_id);
-          if (transitItem) {
-            await supabase
-              .from('transit_items')
-              .update({ remaining: transitItem.remaining + qtyToReturn })
-              .eq('id', transitItem.id);
-          }
-        }
-      } else {
-        const qtyToReturn = item.quantity;
-        const transitItem = get().transitItems.find(t => t.product_id === item.product_id);
-        if (transitItem) {
-          await supabase
-            .from('transit_items')
-            .update({ remaining: transitItem.remaining + qtyToReturn })
-            .eq('id', transitItem.id);
-        }
-      }
-    }
-
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({ status: 'cancelled', updated_at: new Date().toISOString() })
       .eq('id', accountId);
@@ -2819,10 +2804,6 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     await get().getPendingAccounts();
-    const { data: transitData } = await supabase.from('transit_items').select('*').eq('user_id', useAuthStore.getState().user?.id);
-    if (transitData) {
-      set({ transitItems: transitData.filter((t: any) => t.remaining > 0) });
-    }
     return { success: true };
   },
 
@@ -2837,11 +2818,11 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     const date = saleDate || new Date().toISOString().split('T')[0];
-    
+
     if (isDateClosed(get().dailyClosings, date)) {
       return { success: false, error: 'El día está cerrado, no se puede cobrar' };
     }
-    
+
     if (!IS_ONLINE) {
       const saleItems = account.items.map(item => ({
         product_id: item.product_id,
@@ -2879,19 +2860,14 @@ deletePendingAccount: async (accountId: string) => {
         pendingAccounts: state.pendingAccounts.filter(a => a.id !== accountId),
       }));
 
-      await addToSyncQueue({
-        operation: 'markPendingAccountPaid', table: 'pending_accounts',
-        payload: { accountId },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.pendingAccounts.delete(accountId); } catch {}
+
       return { success: true };
     }
 
     const saleItems = account.items.map(item => {
       const itemIsRecipe = item.is_recipe || false;
       const itemRecipeSnapshot = item.recipe_snapshot || null;
-      
+
       return {
         product_id: item.product_id,
         quantity: item.quantity,
@@ -2906,7 +2882,7 @@ deletePendingAccount: async (accountId: string) => {
     const isAccountHouse = account.is_account_house || false;
     const saleType = account.sale_type || 'SALON';
     const totalPaidCup = (efectivo || 0) + (transferencia || 0) + ((usd || 0) * (user.usdRate || 0)) + ((eur || 0) * (user.eurRate || 0));
-    
+
     const result = await get().addSale({
       employee_id: employeeId,
       items: saleItems,
@@ -2927,7 +2903,7 @@ deletePendingAccount: async (accountId: string) => {
       return { success: false, error: result.error };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('pending_accounts')
       .update({ status: 'paid', updated_at: new Date().toISOString() })
       .eq('id', accountId);
@@ -2952,45 +2928,55 @@ deletePendingAccount: async (accountId: string) => {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   },
 
-  saveAccessPin: async (role: string, pin: string, name: string) => {
+  saveAccessPin: async (params) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
-    if (!name || name.trim() === '') return { success: false, error: 'El nombre es obligatorio' };
+    const name = String(params?.name || '').trim();
+    if (!name) return { success: false, error: 'El nombre es obligatorio' };
 
-    const pinHash = await get().hashPin(pin);
+    // El hash scrypt se calcula EN EL SERVIDOR (RPC save_access_pin), nunca en el
+    // cliente. Esto evita el SHA-256 con salt fijo que era fácil de romper.
+    const existingPin = params.pinId
+      ? get().accessPins.find(p => p.id === params.pinId)
+      : params.roleId === 'owner'
+        ? get().accessPins.find(p => p.role === 'owner')
+        : undefined;
 
-    if (role === 'owner') {
-      const existingPin = get().accessPins.find(p => p.role === 'owner');
-      
-      if (existingPin) {
-        const { error } = await supabase
-          .from('access_pins')
-          .update({ pin_hash: pinHash, pin_name: name.trim(), is_active: true, failed_attempts: 0, blocked_until: null })
-          .eq('id', existingPin.id);
+    const { data, error } = await localDb.rpc('save_access_pin', {
+      roleId: params.roleId || undefined,
+      roleName: params.roleName || undefined,
+      modules: params.modules || [],
+      pin: String(params.pin || ''),
+      name,
+      pinId: existingPin?.id || params.pinId || undefined,
+    });
 
-        if (error) return { success: false, error: error.message };
-      } else {
-        const { error } = await supabase
-          .from('access_pins')
-          .insert({ user_id: user.id, role, pin_hash: pinHash, pin_name: name.trim() });
-
-        if (error) return { success: false, error: error.message };
-      }
-    } else {
-      const { error } = await supabase
-        .from('access_pins')
-        .insert({ user_id: user.id, role, pin_hash: pinHash, pin_name: name.trim() });
-
-      if (error) return { success: false, error: error.message };
+    if (error) return { success: false, error: error.message };
+    // El servidor puede rechazar la operación con éxito HTTP pero success:false en data
+    // (p. ej. PIN duplicado). Propagar ese error a la UI.
+    if (data && (data as any).success === false) {
+      return { success: false, error: String((data as any).error || 'Error al guardar el PIN') };
     }
 
-    const { data } = await supabase.from('access_pins').select('*').eq('user_id', user.id);
-    set({ accessPins: data || [] });
+    const { data: pinsData } = await localDb.from('access_pins').select('*').eq('user_id', user.id);
+    set({ accessPins: pinsData || [] });
+    await get().fetchRoles();
     return { success: true };
   },
 
+  fetchRoles: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    try {
+      const { data } = await localDb.from('roles').select('*').eq('user_id', user.id);
+      set({ roles: (data || []).map((r: any) => ({ ...r, modules: normalizeRoleModules(r.modules) })) });
+    } catch (err) {
+      logger.warn('[fetchRoles] Error cargando roles:', err);
+    }
+  },
+
   toggleAccessPin: async (pinId: string, isActive: boolean) => {
-    const { error } = await supabase
+    const { error } = await localDb
       .from('access_pins')
       .update({ is_active: isActive })
       .eq('id', pinId);
@@ -2999,14 +2985,14 @@ deletePendingAccount: async (accountId: string) => {
 
     const user = useAuthStore.getState().user;
     if (user) {
-      const { data } = await supabase.from('access_pins').select('*').eq('user_id', user.id);
+      const { data } = await localDb.from('access_pins').select('*').eq('user_id', user.id);
       set({ accessPins: data || [] });
     }
     return { success: true };
   },
 
   deleteAccessPin: async (pinId: string) => {
-    const { error } = await supabase
+    const { error } = await localDb
       .from('access_pins')
       .delete()
       .eq('id', pinId);
@@ -3015,9 +3001,26 @@ deletePendingAccount: async (accountId: string) => {
 
     const user = useAuthStore.getState().user;
     if (user) {
-      const { data } = await supabase.from('access_pins').select('*').eq('user_id', user.id);
+      const { data } = await localDb.from('access_pins').select('*').eq('user_id', user.id);
       set({ accessPins: data || [] });
     }
+    return { success: true };
+  },
+
+  deleteRole: async (roleId: string) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No hay usuario autenticado' };
+    if (roleId === 'owner') return { success: false, error: 'El rol de Dueño no se puede eliminar' };
+
+    const { error } = await localDb
+      .from('roles')
+      .delete()
+      .eq('id', roleId)
+      .eq('user_id', user.id);
+
+    if (error) return { success: false, error: error.message };
+
+    await get().fetchRoles();
     return { success: true };
   },
 
@@ -3034,16 +3037,18 @@ deletePendingAccount: async (accountId: string) => {
     // Online: verify server-side via RPC (secure)
     if (IS_ONLINE) {
       try {
-        const { data, error: rpcError } = await supabase.rpc('verify_access_pin', {
+        const { data, error: rpcError } = await localDb.rpc('verify_access_pin', {
           p_pin: pin,
           p_module_path: modulePath,
         });
         if (rpcError) throw rpcError;
         if (data) {
           if (data.success) {
-            set({ verifiedRole: data.role, verifiedRoleName: data.pin_name });
+            const modules = Array.isArray(data.modules) ? data.modules.map(String) : [];
+            set({ verifiedRole: data.role, verifiedRoleName: data.pin_name, verifiedRoleModules: modules });
             localStorage.setItem('verifiedRole', data.role);
             localStorage.setItem('verifiedRoleName', data.pin_name || '');
+            localStorage.setItem('verifiedModules', JSON.stringify(modules));
             await get().fetchAll();
             return { success: true, verifiedRole: data.role };
           }
@@ -3061,19 +3066,23 @@ deletePendingAccount: async (accountId: string) => {
 
     // Offline fallback: client-side hash comparison
     const pinHash = await get().hashPin(pin);
-    const matchingPins = get().accessPins.filter(p => p.is_active && requiredRoles.includes(p.role));
+    const moduleKey = MODULE_BY_PATH[modulePath];
+    const matchingPins = get().accessPins.filter(p => {
+      if (!p.is_active) return false;
+      if (!moduleKey) return requiredRoles.includes(p.role);
+      return getRoleModules(p.role).includes(moduleKey);
+    });
     const userPin = matchingPins.find(p => p.pin_hash === pinHash);
-    
+
     if (!userPin) {
       const existingPin = matchingPins[0];
       if (!existingPin) return { success: false, error: 'Tu PIN no tiene acceso a este módulo' };
-      
+
       if (IS_ONLINE) {
-        await supabase.from('access_pins').update({ failed_attempts: existingPin.failed_attempts + 1 }).eq('id', existingPin.id);
+        await localDb.from('access_pins').update({ failed_attempts: existingPin.failed_attempts + 1 }).eq('id', existingPin.id);
       } else {
         const newAttempts = existingPin.failed_attempts + 1;
         const blockedUntil = newAttempts >= 3 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
-        await addToSyncQueue({ operation: 'updateAccessPinAttempts', table: 'access_pins', payload: { pinId: existingPin.id, failed_attempts: newAttempts, blocked_until: blockedUntil } });
         if (blockedUntil) {
           return { success: false, error: 'PIN bloqueado por 3 intentos fallidos. Intente de nuevo en 5 min.', blocked: true, remainingTime: 300 };
         }
@@ -3089,9 +3098,11 @@ deletePendingAccount: async (accountId: string) => {
       }
     }
 
-    set({ verifiedRole: userPin.role, verifiedRoleName: userPin.pin_name });
+    const offlineModules = getRoleModules(userPin.role);
+    set({ verifiedRole: userPin.role, verifiedRoleName: userPin.pin_name, verifiedRoleModules: offlineModules });
     localStorage.setItem('verifiedRole', userPin.role);
     localStorage.setItem('verifiedRoleName', userPin.pin_name || '');
+    localStorage.setItem('verifiedModules', JSON.stringify(offlineModules));
     return { success: true, verifiedRole: userPin.role };
   },
 
@@ -3102,16 +3113,18 @@ deletePendingAccount: async (accountId: string) => {
     // Online: verify server-side via RPC (secure)
     if (IS_ONLINE) {
       try {
-        const { data, error: rpcError } = await supabase.rpc('verify_access_pin', {
+        const { data, error: rpcError } = await localDb.rpc('verify_access_pin', {
           p_pin: pin,
           p_module_path: null,
         });
         if (rpcError) throw rpcError;
         if (data) {
           if (data.success) {
-            set({ verifiedRole: data.role, verifiedRoleName: data.pin_name });
+            const modules = Array.isArray(data.modules) ? data.modules.map(String) : [];
+            set({ verifiedRole: data.role, verifiedRoleName: data.pin_name, verifiedRoleModules: modules });
             localStorage.setItem('verifiedRole', data.role);
             localStorage.setItem('verifiedRoleName', data.pin_name || '');
+            localStorage.setItem('verifiedModules', JSON.stringify(modules));
             await get().fetchAll();
             return { success: true, role: data.role };
           }
@@ -3130,14 +3143,13 @@ deletePendingAccount: async (accountId: string) => {
     // Offline fallback
     const pinHash = await get().hashPin(pin);
     const userPin = get().accessPins.find(p => p.is_active && p.pin_hash === pinHash);
-    
+
     if (!userPin) {
       const anyPin = get().accessPins.find(p => p.is_active);
       if (!anyPin) return { success: false, error: 'No hay pines activos configurados' };
       if (!IS_ONLINE) {
         const newAttempts = anyPin.failed_attempts + 1;
         const blockedUntil = newAttempts >= 3 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
-        await addToSyncQueue({ operation: 'updateAccessPinAttempts', table: 'access_pins', payload: { pinId: anyPin.id, failed_attempts: newAttempts, blocked_until: blockedUntil } });
         if (blockedUntil) {
           return { success: false, error: 'PIN bloqueado por 3 intentos fallidos. Intente de nuevo en 5 min.', blocked: true, remainingTime: 300 };
         }
@@ -3152,9 +3164,11 @@ deletePendingAccount: async (accountId: string) => {
       }
     }
 
-    set({ verifiedRole: userPin.role, verifiedRoleName: userPin.pin_name });
+    const offlineModules = getRoleModules(userPin.role);
+    set({ verifiedRole: userPin.role, verifiedRoleName: userPin.pin_name, verifiedRoleModules: offlineModules });
     localStorage.setItem('verifiedRole', userPin.role);
     localStorage.setItem('verifiedRoleName', userPin.pin_name || '');
+    localStorage.setItem('verifiedModules', JSON.stringify(offlineModules));
     return { success: true, role: userPin.role };
   },
 
@@ -3166,15 +3180,14 @@ deletePendingAccount: async (accountId: string) => {
     const verifiedRoleName = get().verifiedRoleName;
     const activePin = get().accessPins.find(p => p.is_active);
     const role = verifiedRole || activePin?.role || user.role || 'owner';
-    const roleLabel = verifiedRole ? `${ROLE_LABELS[verifiedRole]}${verifiedRoleName ? `: ${verifiedRoleName}` : ''}` : (activePin ? `${ROLE_LABELS[activePin.role]}${activePin.pin_name ? `: ${activePin.pin_name}` : ''}` : (user.name || 'Dueño/a'));
-    
+    const roleLabel = verifiedRole ? `${getRoleLabel(verifiedRole)}${verifiedRoleName ? `: ${verifiedRoleName}` : ''}` : (activePin ? `${getRoleLabel(activePin.role)}${activePin.pin_name ? `: ${activePin.pin_name}` : ''}` : (user.name || 'Dueño/a'));
+
     if (!IS_ONLINE) {
-      await addToSyncQueue({ operation: 'logAction', table: 'action_logs', payload: { module, action, details, role, roleLabel } });
-      get().refreshSyncQueueCount();
+
       return;
     }
 
-    await supabase.from('action_logs').insert({
+    await localDb.from('action_logs').insert({
       user_id: user.id,
       role: role,
       pin_role_label: roleLabel,
@@ -3189,7 +3202,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    // Si está offline, no intentar cargar desde Supabase para evitar crash
+    // Si está offline, no intentar cargar desde el servidor local para evitar crash
     // Mantener los datos existentes en memoria
     if (!IS_ONLINE) {
       logger.info('[getActionLogs] Offline: manteniendo datos existentes');
@@ -3197,7 +3210,7 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     try {
-      const { data, error } = await supabase
+      const { data, error } = await localDb
         .from('action_logs')
         .select('*')
         .eq('user_id', user.id)
@@ -3234,17 +3247,7 @@ deletePendingAccount: async (accountId: string) => {
         recipes: [offlineRecipe, ...state.recipes],
       }));
 
-      await addToSyncQueue({
-        operation: 'addRecipe',
-        table: 'recipes',
-        payload: {
-          recipe: { id: recipeId, user_id: user.id, name: capitalize(recipe.name), selling_price: recipe.selling_price, created_at: now },
-          ingredients: (recipe.ingredients || []).map(ing => ({ ...ing, recipe_id: recipeId })),
-          tempId: recipeId,
-        },
-      });
 
-      try { await db.recipes.put(offlineRecipe).catch(() => {}); } catch {}
       toast.success('Receta guardada localmente (sin conexión)');
       return;
     }
@@ -3253,7 +3256,7 @@ deletePendingAccount: async (accountId: string) => {
     trackLocalCreation(recipeId);
     try {
       const { data: newRecipe, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('recipes')
           .insert({ 
             id: recipeId,
@@ -3278,7 +3281,7 @@ deletePendingAccount: async (accountId: string) => {
         }));
 
         await queryWithRetry(() =>
-          supabase.from('recipe_ingredients').insert(ingredients)
+          localDb.from('recipe_ingredients').insert(ingredients)
         );
       }
 
@@ -3298,18 +3301,13 @@ deletePendingAccount: async (accountId: string) => {
       set((state) => ({
         recipes: state.recipes.map(r => r.id === id ? { ...r, ...updates } : r),
       }));
-      await addToSyncQueue({
-        operation: 'updateRecipe', table: 'recipes',
-        payload: { id, recipeName: get().recipes.find(r => r.id === id)?.name || updates.name || 'Receta', updates: { name: updates.name ? capitalize(updates.name) : undefined, selling_price: updates.selling_price, ingredients: updates.ingredients } },
-      });
-      get().refreshSyncQueueCount();
-      try { await db.recipes.put(get().recipes.find((r: any) => r.id === id) as any).catch(() => {}); } catch {}
+
       toast.success('Receta actualizada (sin conexión)');
       return;
     }
 
     const { error } = await queryWithRetry(() =>
-      supabase
+      localDb
         .from('recipes')
         .update({ 
           name: updates.name ? capitalize(updates.name) : undefined, 
@@ -3324,9 +3322,9 @@ deletePendingAccount: async (accountId: string) => {
 
     if (updates.ingredients) {
       await queryWithRetry(() =>
-        supabase.from('recipe_ingredients').delete().eq('recipe_id', id)
+        localDb.from('recipe_ingredients').delete().eq('recipe_id', id)
       );
-      
+
       if (updates.ingredients.length > 0) {
         const ingredients = updates.ingredients.map(ing => ({
           recipe_id: id,
@@ -3335,7 +3333,7 @@ deletePendingAccount: async (accountId: string) => {
           unit: ing.unit,
         }));
         await queryWithRetry(() =>
-          supabase.from('recipe_ingredients').insert(ingredients)
+          localDb.from('recipe_ingredients').insert(ingredients)
         );
       }
     }
@@ -3349,18 +3347,16 @@ deletePendingAccount: async (accountId: string) => {
     if (!IS_ONLINE) {
       const recipeToDelete = get().recipes.find(r => r.id === id);
       set((state) => ({ recipes: state.recipes.filter(r => r.id !== id) }));
-      await addToSyncQueue({ operation: 'deleteRecipe', table: 'recipes', payload: { id, name: recipeToDelete?.name || 'Receta' } });
-      get().refreshSyncQueueCount();
-      try { await db.recipes.delete(id).catch(() => {}); } catch {}
+
       toast.success('Receta eliminada (sin conexión)');
       return;
     }
 
     await queryWithRetry(() =>
-      supabase.from('recipe_ingredients').delete().eq('recipe_id', id)
+      localDb.from('recipe_ingredients').delete().eq('recipe_id', id)
     );
     const { error } = await queryWithRetry(() =>
-      supabase.from('recipes').delete().eq('id', id)
+      localDb.from('recipes').delete().eq('id', id)
     );
 
     if (error) {
@@ -3384,19 +3380,27 @@ deletePendingAccount: async (accountId: string) => {
         created_at: new Date().toISOString(),
       };
       set((state) => ({ employees: [tempEmployee, ...state.employees] }));
-      await addToSyncQueue({ operation: 'addEmployee', table: 'employees', payload: { employee: tempEmployee } });
-      get().refreshSyncQueueCount();
-      try { await db.employees.put(tempEmployee).catch(() => {}); } catch {}
+
       return;
     }
 
     const employeeId = crypto.randomUUID();
     trackLocalCreation(employeeId);
     try {
+      // Número de expediente secuencial por negocio (ine ditable a partir de aquí).
+      const { data: maxRow } = await localDb
+        .from('employees')
+        .select('expediente')
+        .eq('user_id', user.id)
+        .order('expediente', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextExpediente = (maxRow?.expediente ?? 0) + 1;
+
       const { data, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('employees')
-          .insert({ ...employee, id: employeeId, name: capitalize(employee.name), user_id: user.id })
+          .insert({ ...employee, id: employeeId, name: capitalize(employee.name), user_id: user.id, expediente: nextExpediente })
           .select()
           .single()
       );
@@ -3421,7 +3425,7 @@ deletePendingAccount: async (accountId: string) => {
       ...(updates.name !== undefined && { name: capitalize(updates.name) }),
     };
     const { error } = await queryWithRetry(() =>
-      supabase.from('employees').update(capitalizedUpdates).eq('id', id)
+      localDb.from('employees').update(capitalizedUpdates).eq('id', id)
     );
 
     if (error) {
@@ -3434,12 +3438,22 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteEmployee: async (id) => {
-    const { error } = await queryWithRetry(() =>
-      supabase.from('employees').delete().eq('id', id)
-    );
-
-    if (error) {
-      throw new Error('No se pudo eliminar el empleado');
+    // Borrar en cascada: nómina, préstamos, liquidaciones y documentos del empleado
+    // se eliminan en la misma transacción para no dejar registros huérfanos.
+    const user = useAuthStore.getState().user;
+    const deleteFilters = (column: string) => [
+      ...(user ? [{ op: 'eq' as const, column: 'user_id', value: user.id }] : []),
+      { op: 'eq' as const, column, value: id },
+    ];
+    const batch = await localDb.batch([
+      { table: 'employees', method: 'delete', filters: [{ op: 'eq', column: 'id', value: id }] },
+      { table: 'payroll_entries', method: 'delete', filters: deleteFilters('employee_id') },
+      { table: 'employee_loans', method: 'delete', filters: deleteFilters('employee_id') },
+      { table: 'payroll_liquidations', method: 'delete', filters: deleteFilters('employee_id') },
+      { table: 'employee_documents', method: 'delete', filters: deleteFilters('employee_id') },
+    ]);
+    if (batch.error) {
+      throw new Error(batch.error.message || 'No se pudo eliminar el empleado');
     }
 
     set((state) => ({ employees: state.employees.filter(e => e.id !== id) }));
@@ -3449,7 +3463,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) throw new Error('No hay usuario autenticado');
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('departments')
       .insert({ name: capitalize(name), user_id: user.id })
       .select()
@@ -3464,7 +3478,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   updateDepartment: async (id, name) => {
-    const { error } = await supabase.from('departments').update({ name: capitalize(name) }).eq('id', id);
+    const { error } = await localDb.from('departments').update({ name: capitalize(name) }).eq('id', id);
 
     if (error) {
       throw new Error('No se pudo actualizar el departamento');
@@ -3476,7 +3490,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteDepartment: async (id) => {
-    const { error } = await supabase.from('departments').delete().eq('id', id);
+    const { error } = await localDb.from('departments').delete().eq('id', id);
 
     if (error) {
       throw new Error('No se pudo eliminar el departamento');
@@ -3489,7 +3503,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('payroll_config')
       .select('*')
       .eq('user_id', user.id)
@@ -3507,9 +3521,11 @@ deletePendingAccount: async (accountId: string) => {
         tax_exemption_base: 3260,
         tax_rate: 5,
         special_contribution_rate: 5,
+        monthly_hours: 190.6,
+        vacation_accrual_days: 2.5,
       };
 
-      const { data: newData, error: insertError } = await supabase
+      const { data: newData, error: insertError } = await localDb
         .from('payroll_config')
         .insert({ ...defaultConfig, user_id: user.id })
         .select()
@@ -3526,7 +3542,7 @@ deletePendingAccount: async (accountId: string) => {
     const config = get().payrollConfig;
     if (!user || !config) return;
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('payroll_config')
       .update({ ...updates, updated_at: new Date().toISOString() })
       .eq('id', config.id);
@@ -3552,25 +3568,101 @@ deletePendingAccount: async (accountId: string) => {
     const currentUser = useAuthStore.getState().user;
     if (!currentUser) return;
 
+    // Guarda: un período Aplicado (certificado) no puede regenerarse.
+    const { data: appliedPeriod } = await localDb
+      .from('payroll_periods')
+      .select('status')
+      .eq('user_id', currentUser.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+    if (appliedPeriod?.status === 'applied') {
+      throw new Error('La nómina de este período está Aplicada (bloqueada). Reábrela como Dueño/a para poder modificarla.');
+    }
+
+    const monthlyHours = currentConfig.monthly_hours || 190.6;
+    const accrualDays = currentConfig.vacation_accrual_days || 2.5;
+
     const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-    const { data: existingEntries } = await supabase
+    const { data: existingEntries } = await localDb
       .from('payroll_entries')
       .select('id')
       .eq('user_id', currentUser.id)
       .eq('month', month)
       .eq('year', year);
 
-    if (existingEntries && existingEntries.length > 0) {
-      await supabase.from('payroll_entries').delete().eq('user_id', currentUser.id).eq('month', month).eq('year', year);
+    const employees = get().employees;
+    if (employees.length === 0) {
+      throw new Error('No hay personal que generarle nómina');
+    }
+    const departments = get().departments;
+    const loans = get().employeeLoans;
+
+    // ── Captación pre-nómina ───────────────────────────────────────────────
+    // Si no hay captación previa para el mes, se crean borradores por defecto
+    // (todos incluidos, con el fondo de tiempo completo). Así los tests y el
+    // flujo "Generar Nómina" directo siguen funcionando sin captación manual.
+    let drafts = get().payrollDrafts.filter(d => d.month === month && d.year === year);
+    if (drafts.length === 0) {
+      const now = new Date().toISOString();
+      const seed: any[] = employees.map(emp => ({
+        id: crypto.randomUUID(),
+        user_id: currentUser.id,
+        month,
+        year,
+        employee_id: emp.id,
+        include: 1,
+        worked_hours: monthlyHours,
+        hourly_rate: Math.round((emp.salary / monthlyHours) * 100) / 100,
+        bonus: 0,
+        advances: 0,
+        retention: 0,
+        vacation_days: 0,
+        note: '',
+        created_at: now,
+        updated_at: now,
+      }));
+      const seedBatch = await localDb.batch([
+        { table: 'payroll_drafts', method: 'insert', data: seed },
+      ]);
+      if (!seedBatch.error) {
+        drafts = seed;
+        set((state) => ({ payrollDrafts: [...state.payrollDrafts, ...seed] }));
+      }
     }
 
-    const employees = get().employees;
-    const departments = get().departments;
+    // Solo los trabajadores marcados como incluidos en la captación.
+    const included = employees.filter(emp => {
+      const d = drafts.find(x => x.employee_id === emp.id);
+      return d ? d.include === 1 : true;
+    });
+    if (included.length === 0) {
+      throw new Error('No hay trabajadores seleccionados para la nómina de este mes');
+    }
 
-    const entriesToInsert = employees.map(emp => {
-      const earned_salary = emp.salary;
+    const entriesToInsert = included.map(emp => {
+      const draft = drafts.find(x => x.employee_id === emp.id);
+      const hourly_rate = draft?.hourly_rate || Math.round((emp.salary / monthlyHours) * 100) / 100;
+      const worked_hours = draft?.worked_hours || monthlyHours;
+      // Salario del período = tasa horaria × horas reales trabajadas (modelo Versat).
+      const earned_salary = Math.round(hourly_rate * worked_hours * 100) / 100;
+      const days_paid = Math.round((worked_hours / 8) * 100) / 100;
+
       const exemption_base = currentConfig.tax_exemption_base;
-      const result = calcularNomina(earned_salary, exemption_base);
+      const isPartner = emp.person_type === 'partner';
+      // Cuota de préstamo activo del empleado (si tiene).
+      const activeLoan = loans.find(l => l.employee_id === emp.id && l.status === 'active');
+      const loanDeduction = activeLoan ? activeLoan.monthly_payment : 0;
+      const result = calcularNomina(earned_salary, {
+        personType: isPartner ? 'partner' : 'employee',
+        baseContribution: emp.base_contribution,
+        loanDeduction,
+        exemptionBase: currentConfig.tax_exemption_base,
+        bonus: draft?.bonus,
+        vacationDays: draft?.vacation_days,
+        advances: draft?.advances,
+        otherDeductions: draft?.retention,
+      });
 
       const empDept = departments.find(d => d.id === emp.category);
 
@@ -3588,40 +3680,416 @@ deletePendingAccount: async (accountId: string) => {
         tax_amount: result.taxAmount,
         special_contribution: result.specialContribution,
         net_salary: result.netSalary,
-        vacation_days: 0,
+        vacation_days: draft?.vacation_days || 0,
         vacation_base: result.vacationBase,
         employer_contribution: result.employerContribution,
         is_custom: false,
+        overtime_hours: 0,
+        overtime_pay: result.overtimePay,
+        bonus: result.bonus,
+        vacation_pay: result.vacationPay,
+        advances: result.advances,
+        loan_deduction: result.loanDeduction,
+        other_deductions: result.otherDeductions,
+        gross_salary: result.grossSalary,
+        worked_hours,
+        hourly_rate,
+        days_paid,
       };
     });
 
-    if (entriesToInsert.length > 0) {
-      const { data, error } = await supabase.from('payroll_entries').insert(entriesToInsert).select();
-      if (error) {
-        throw new Error('No se pudo generar la nómina');
-      }
+    const isFirstGeneration = !existingEntries || existingEntries.length === 0;
 
+    // Descuento de préstamos: solo en la PRIMERA generación del mes.
+    const loanUpdates: { id: string; balance: number; status: 'active' | 'paid' }[] = [];
+    if (isFirstGeneration) {
+      for (const emp of included) {
+        const activeLoan = loans.find(l => l.employee_id === emp.id && l.status === 'active');
+        if (activeLoan && activeLoan.monthly_payment > 0) {
+          const newBalance = Math.max(0, activeLoan.balance - activeLoan.monthly_payment);
+          loanUpdates.push({
+            id: activeLoan.id,
+            balance: newBalance,
+            status: newBalance <= 0 ? 'paid' : 'active',
+          });
+        }
+      }
+    }
+
+    // Movimientos de vacaciones: se RECALCULAN en cada generación del mes
+    // (delete + reinsert del período) para que el saldo refleje siempre la
+    // nómina vigente, incluso tras reabrir, editar la captación y regenerar.
+    // Saldo del trabajador = suma de TODOS sus movimientos históricos.
+    const vacMoves: any[] = [];
+    for (const emp of included) {
+      const draft = drafts.find(x => x.employee_id === emp.id);
+      const paidDays = draft?.vacation_days || 0;
+      // Acumulación mensual (crédito).
+      vacMoves.push({
+        id: crypto.randomUUID(),
+        user_id: currentUser.id,
+        employee_id: emp.id,
+        month,
+        year,
+        type: 'accrual',
+        days: accrualDays,
+        note: 'Acumulación mensual',
+        created_at: new Date().toISOString(),
+      });
+      // Vacaciones pagadas (débito).
+      if (paidDays > 0) {
+        vacMoves.push({
+          id: crypto.randomUUID(),
+          user_id: currentUser.id,
+          employee_id: emp.id,
+          month,
+          year,
+          type: 'paid',
+          days: -paidDays,
+          note: 'Vacaciones pagadas',
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Saldos resultantes: suma de movimientos de MESES ANTERIORES + el mes actual
+    // recalculado, para todo trabajador afectado (incluidos ahora o antes).
+    const { data: allVacMoves } = await localDb
+      .from('employee_vacation_movements')
+      .select('employee_id, month, year, days')
+      .eq('user_id', currentUser.id);
+    const prevVacSum: Record<string, number> = {};
+    const affectedEmployees = new Set<string>(included.map(e => e.id));
+    for (const m of allVacMoves || []) {
+      if (m.month === month && m.year === year) {
+        affectedEmployees.add(m.employee_id);
+        continue; // el mes actual se borra y se reinserta
+      }
+      prevVacSum[m.employee_id] = (prevVacSum[m.employee_id] || 0) + (m.days || 0);
+    }
+    const empVacBalanceUpdates: Record<string, { id: string; balance: number }> = {};
+    for (const empId of affectedEmployees) {
+      const emp = employees.find(e => e.id === empId);
+      if (!emp) continue;
+      const draft = drafts.find(x => x.employee_id === empId);
+      const isIncluded = included.some(i => i.id === empId);
+      let bal = prevVacSum[empId] || 0;
+      if (isIncluded) {
+        bal += accrualDays;
+        bal -= draft?.vacation_days || 0;
+      }
+      empVacBalanceUpdates[empId] = { id: empId, balance: Math.max(0, Math.round(bal * 100) / 100) };
+    }
+
+    // Asegurar el registro de período (estado borrador) sin pisar uno ya aplicado.
+    const { data: existingPeriod } = await localDb
+      .from('payroll_periods')
+      .select('*')
+      .eq('user_id', currentUser.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+    const periodCommands: any[] = [];
+    if (!existingPeriod) {
+      periodCommands.push({
+        table: 'payroll_periods',
+        method: 'insert',
+        data: {
+          id: crypto.randomUUID(),
+          user_id: currentUser.id,
+          month,
+          year,
+          status: 'draft',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    // Borrado + re-inserción de la nómina del mes en UNA transacción.
+    const commands: any[] = [...periodCommands];
+    if (existingEntries && existingEntries.length > 0) {
+      commands.push({
+        table: 'payroll_entries',
+        method: 'delete',
+        filters: [{ op: 'eq', column: 'user_id', value: currentUser.id }, { op: 'eq', column: 'month', value: month }, { op: 'eq', column: 'year', value: year }],
+      });
+    }
+    if (entriesToInsert.length > 0) {
+      commands.push({ table: 'payroll_entries', method: 'insert', data: entriesToInsert });
+    }
+    commands.push({
+      table: 'payroll_config',
+      method: 'update',
+      data: { last_calculated_month: monthStr },
+      filters: [{ op: 'eq', column: 'user_id', value: currentUser.id }],
+    });
+    for (const lu of loanUpdates) {
+      commands.push({
+        table: 'employee_loans',
+        method: 'update',
+        data: { balance: lu.balance, status: lu.status },
+        filters: [{ op: 'eq', column: 'id', value: lu.id }],
+      });
+    }
+    // Los movimientos de vacaciones del mes se reemplazan completos
+    commands.push({
+      table: 'employee_vacation_movements',
+      method: 'delete',
+      filters: [{ op: 'eq', column: 'user_id', value: currentUser.id }, { op: 'eq', column: 'month', value: month }, { op: 'eq', column: 'year', value: year }],
+    });
+    for (const vm of vacMoves) {
+      commands.push({ table: 'employee_vacation_movements', method: 'insert', data: vm });
+    }
+    for (const v of Object.values(empVacBalanceUpdates)) {
+      commands.push({
+        table: 'employees',
+        method: 'update',
+        data: { vacation_balance: v.balance },
+        filters: [{ op: 'eq', column: 'id', value: v.id }],
+      });
+    }
+
+    const batch = await localDb.batch(commands);
+    if (batch.error) {
+      throw new Error('No se pudo generar la nómina: ' + (batch.error.message || ''));
+    }
+
+    if (entriesToInsert.length > 0) {
+      const { data: savedEntries } = await localDb
+        .from('payroll_entries')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .eq('month', month)
+        .eq('year', year);
       set((state) => ({
-        payrollEntries: data || [],
+        payrollEntries: savedEntries || [],
         payrollConfig: state.payrollConfig ? { ...state.payrollConfig, last_calculated_month: monthStr } : null,
       }));
+    }
 
-      await supabase.from('payroll_config').update({ last_calculated_month: monthStr }).eq('user_id', currentUser.id);
+    set((state) => ({
+      employees: state.employees.map(e =>
+        empVacBalanceUpdates[e.id] ? { ...e, vacation_balance: empVacBalanceUpdates[e.id].balance } : e
+      ),
+    }));
+
+    if (loanUpdates.length > 0) {
+      set((state) => ({
+        employeeLoans: state.employeeLoans.map(l => {
+          const lu = loanUpdates.find(u => u.id === l.id);
+          return lu ? { ...l, ...lu } : l;
+        }),
+      }));
     }
 
     await get().logAction('payroll', 'GENERAR_NOMINA', {
       month,
       year,
-      total_employees: employees.length,
+      total_employees: included.length,
       total_net: entriesToInsert.reduce((sum, e) => sum + e.net_salary, 0),
     });
+  },
+
+  // ── Captación pre-nómina ──────────────────────────────────────────────────
+  getPayrollDrafts: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+
+    const { data, error } = await localDb
+      .from('payroll_drafts')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year);
+
+    if (error) {
+      logger.error('Error fetching payroll drafts:', error);
+      return;
+    }
+
+    // Conserva en el estado los borradores de este mes/año (los demás meses
+    // quedan en memoria por si se vuelve a seleccionar el mes).
+    set((state) => ({
+      payrollDrafts: [...state.payrollDrafts.filter(d => !(d.month === month && d.year === year)), ...(data || [])],
+    }));
+  },
+
+  savePayrollDrafts: async (month, year, rows) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+
+    // Guarda: la captación de un período Aplicado es inmutable.
+    const { data: appliedPeriod } = await localDb
+      .from('payroll_periods')
+      .select('status')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+    if (appliedPeriod?.status === 'applied') {
+      throw new Error('La nómina de este período está Aplicada (bloqueada). Reábrela como Dueño/a para modificar la captación.');
+    }
+
+    const now = new Date().toISOString();
+    const commands: any[] = rows.map(r => {
+      const full = {
+        id: r.id || crypto.randomUUID(),
+        user_id: user.id,
+        month,
+        year,
+        employee_id: r.employee_id!,
+        include: r.include ?? 1,
+        worked_hours: r.worked_hours ?? 0,
+        hourly_rate: r.hourly_rate ?? 0,
+        bonus: r.bonus ?? 0,
+        advances: r.advances ?? 0,
+        retention: r.retention ?? 0,
+        vacation_days: r.vacation_days ?? 0,
+        note: r.note ?? '',
+        updated_at: now,
+      };
+      return { table: 'payroll_drafts', method: 'upsert', data: full, onConflict: 'user_id,month,year,employee_id' };
+    });
+
+    const batch = await localDb.batch(commands);
+    if (batch.error) {
+      throw new Error('No se pudo guardar la captación: ' + (batch.error.message || ''));
+    }
+
+    const saved = rows.map(r => ({
+      ...r,
+      id: r.id || crypto.randomUUID(),
+      user_id: user.id,
+      month,
+      year,
+      include: r.include ?? 1,
+      worked_hours: r.worked_hours ?? 0,
+      hourly_rate: r.hourly_rate ?? 0,
+      bonus: r.bonus ?? 0,
+      advances: r.advances ?? 0,
+      retention: r.retention ?? 0,
+      vacation_days: r.vacation_days ?? 0,
+      note: r.note ?? '',
+      updated_at: now,
+    })) as PayrollDraft[];
+
+    set((state) => {
+      const others = state.payrollDrafts.filter(d => !(d.month === month && d.year === year));
+      // Fusiona: los existentes (con id) se actualizan; los nuevos se agregan.
+      const byEmp = new Map(saved.map(s => [s.employee_id, s]));
+      const merged = others.filter(d => !(d.month === month && d.year === year));
+      void merged;
+      const current = state.payrollDrafts.filter(d => d.month === month && d.year === year);
+      const updated = current.map(d => byEmp.get(d.employee_id) ? { ...d, ...byEmp.get(d.employee_id) } : d);
+      const newOnes = saved.filter(s => !current.some(d => d.employee_id === s.employee_id));
+      return { payrollDrafts: [...others, ...updated, ...newOnes] };
+    });
+  },
+
+  getPayrollPeriod: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+
+    const { data, error } = await localDb
+      .from('payroll_periods')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+
+    if (error) {
+      logger.error('Error fetching payroll period:', error);
+      return;
+    }
+
+    set({ payrollPeriod: data || null });
+  },
+
+  applyPayroll: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+
+    const now = new Date().toISOString();
+    const { data: existing } = await localDb
+      .from('payroll_periods')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+
+    const periodId = existing?.id || crypto.randomUUID();
+    const command: any = existing
+      ? {
+          table: 'payroll_periods',
+          method: 'update',
+          data: { status: 'applied', applied_at: now, applied_by: user.name || '', updated_at: now },
+          filters: [{ op: 'eq', column: 'id', value: periodId }],
+        }
+      : {
+          table: 'payroll_periods',
+          method: 'insert',
+          data: {
+            id: periodId,
+            user_id: user.id,
+            month,
+            year,
+            status: 'applied',
+            applied_at: now,
+            applied_by: user.name || '',
+            created_at: now,
+            updated_at: now,
+          },
+        };
+
+    const batch = await localDb.batch([command]);
+    if (batch.error) {
+      throw new Error('No se pudo aplicar la nómina: ' + (batch.error.message || ''));
+    }
+
+    // Refresca el período desde la BD para que el estado quede consistente.
+    const { data: periodRow } = await localDb
+      .from('payroll_periods')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year)
+      .maybeSingle();
+    set({ payrollPeriod: (periodRow as PayrollPeriod) || null });
+
+    await get().logAction('payroll', 'APLICAR_NOMINA', { month, year });
+  },
+
+  reopenPayroll: async (month, year) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+
+    const now = new Date().toISOString();
+    const { error } = await localDb
+      .from('payroll_periods')
+      .update({ status: 'draft', applied_at: null, applied_by: null, updated_at: now })
+      .eq('user_id', user.id)
+      .eq('month', month)
+      .eq('year', year);
+
+    if (error) {
+      throw new Error('No se pudo reabrir la nómina');
+    }
+
+    set((state) => ({
+      payrollPeriod: state.payrollPeriod ? { ...state.payrollPeriod, status: 'draft', applied_at: undefined, applied_by: undefined } : state.payrollPeriod,
+    }));
+
+    await get().logAction('payroll', 'REABRIR_NOMINA', { month, year });
   },
 
   getPayrollEntries: async (month, year) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('payroll_entries')
       .select('*')
       .eq('user_id', user.id)
@@ -3645,7 +4113,7 @@ deletePendingAccount: async (accountId: string) => {
     const pageSize = 10;
     const offset = (page - 1) * pageSize;
 
-    let query = supabase
+    let query = localDb
       .from('employees')
       .select('*', { count: 'exact' })
       .eq('user_id', user.id);
@@ -3686,7 +4154,7 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     try {
-      let query = supabase
+      let query = localDb
         .from('employees')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id);
@@ -3720,7 +4188,7 @@ deletePendingAccount: async (accountId: string) => {
     const pageSize = 10;
     const offset = (page - 1) * pageSize;
 
-    let query = supabase
+    let query = localDb
       .from('departments')
       .select('*', { count: 'exact' })
       .eq('user_id', user.id);
@@ -3756,7 +4224,7 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     try {
-      let query = supabase
+      let query = localDb
         .from('departments')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id);
@@ -3786,7 +4254,7 @@ deletePendingAccount: async (accountId: string) => {
     const pageSize = 20;
     const offset = (page - 1) * pageSize;
 
-    const { data, error, count } = await supabase
+    const { data, error, count } = await localDb
       .from('payroll_entries')
       .select('*', { count: 'exact' })
       .eq('user_id', user.id)
@@ -3821,7 +4289,7 @@ deletePendingAccount: async (accountId: string) => {
     }
 
     try {
-      const { count, error } = await supabase
+      const { count, error } = await localDb
         .from('payroll_entries')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)
@@ -3847,12 +4315,47 @@ deletePendingAccount: async (accountId: string) => {
     const config = get().payrollConfig;
     if (!config) return;
 
+    // Guarda: los registros de un período Aplicado son inmutables.
+    const { data: appliedPeriod } = await localDb
+      .from('payroll_periods')
+      .select('status')
+      .eq('user_id', currentEntry.user_id)
+      .eq('month', currentEntry.month)
+      .eq('year', currentEntry.year)
+      .maybeSingle();
+    if (appliedPeriod?.status === 'applied') {
+      throw new Error('La nómina de este período está Aplicada (bloqueada). Reábrela como Dueño/a para poder modificarla.');
+    }
+
     let finalUpdates = { ...updates };
 
-    if (updates.earned_salary !== undefined) {
-      const earned_salary = updates.earned_salary;
+    // Recalcular cuando cambia cualquiera de los conceptos de nómina.
+    const conceptKeys = ['earned_salary', 'overtime_hours', 'overtime_type', 'bonus', 'vacation_days', 'advances', 'loan_deduction', 'other_deductions'] as const;
+    if (conceptKeys.some(k => (updates as any)[k] !== undefined)) {
+      const earned_salary = (updates as any).earned_salary !== undefined ? (updates as any).earned_salary : currentEntry.earned_salary;
+      const overtimeHours = (updates as any).overtime_hours !== undefined ? (updates as any).overtime_hours : (currentEntry.overtime_hours || 0);
+      const overtimeType = (updates as any).overtime_type !== undefined ? (updates as any).overtime_type : (currentEntry.overtime_type || 'diurna');
+      const bonus = (updates as any).bonus !== undefined ? (updates as any).bonus : currentEntry.bonus;
+      const vacationDays = (updates as any).vacation_days !== undefined ? (updates as any).vacation_days : currentEntry.vacation_days;
+      const advances = (updates as any).advances !== undefined ? (updates as any).advances : currentEntry.advances;
+      const loanDeduction = (updates as any).loan_deduction !== undefined ? (updates as any).loan_deduction : currentEntry.loan_deduction;
+      const otherDeductions = (updates as any).other_deductions !== undefined ? (updates as any).other_deductions : currentEntry.other_deductions;
       const exemption_base = config.tax_exemption_base;
-      const result = calcularNomina(earned_salary, exemption_base);
+      const employee = get().employees.find(e => e.id === currentEntry.employee_id);
+      const isPartner = employee?.person_type === 'partner';
+      const result = calcularNomina(earned_salary, {
+        personType: isPartner ? 'partner' : 'employee',
+        baseContribution: employee?.base_contribution,
+        exemptionBase: config.tax_exemption_base,
+        monthlyHours: config.monthly_hours || 190.6,
+        overtimeHours,
+        overtimeType,
+        bonus,
+        vacationDays,
+        advances,
+        loanDeduction,
+        otherDeductions,
+      });
 
       finalUpdates = {
         ...updates,
@@ -3864,10 +4367,19 @@ deletePendingAccount: async (accountId: string) => {
         net_salary: result.netSalary,
         vacation_base: result.vacationBase,
         employer_contribution: result.employerContribution,
+        overtime_hours: overtimeHours,
+        overtime_type: overtimeType,
+        overtime_pay: result.overtimePay,
+        bonus: result.bonus,
+        vacation_pay: result.vacationPay,
+        advances: result.advances,
+        loan_deduction: result.loanDeduction,
+        other_deductions: result.otherDeductions,
+        gross_salary: result.grossSalary,
       };
     }
 
-    const { error } = await supabase
+    const { error } = await localDb
       .from('payroll_entries')
       .update({ ...finalUpdates, updated_at: new Date().toISOString(), is_custom: true })
       .eq('id', id);
@@ -3900,9 +4412,23 @@ deletePendingAccount: async (accountId: string) => {
     const employee = get().employees.find(e => e.id === entry.employee_id);
     if (!employee) return;
 
-    const earned_salary = employee.salary;
+    // Base del período: respeta las horas trabajadas de la captación
+    // (tasa × horas); sin captación, el salario mensual completo.
+    const monthlyHours = config.monthly_hours || 190.6;
+    const hourly_rate = entry.hourly_rate || Math.round((employee.salary / monthlyHours) * 100) / 100;
+    const worked_hours = entry.worked_hours || monthlyHours;
+    const earned_salary = Math.round(hourly_rate * worked_hours * 100) / 100;
     const exemption_base = config.tax_exemption_base;
-    const result = calcularNomina(earned_salary, exemption_base);
+    const isPartner = employee.person_type === 'partner';
+    const activeLoan = get().employeeLoans.find(l => l.employee_id === employee.id && l.status === 'active');
+    const loanDeduction = activeLoan ? activeLoan.monthly_payment : 0;
+    const result = calcularNomina(earned_salary, {
+      personType: isPartner ? 'partner' : 'employee',
+      baseContribution: employee.base_contribution,
+      loanDeduction,
+      exemptionBase: config.tax_exemption_base,
+      monthlyHours,
+    });
 
     await get().updatePayrollEntry(id, {
       base_salary: employee.salary,
@@ -3914,8 +4440,135 @@ deletePendingAccount: async (accountId: string) => {
       net_salary: result.netSalary,
       vacation_base: result.vacationBase,
       employer_contribution: result.employerContribution,
+      overtime_hours: 0,
+      overtime_type: 'diurna',
+      overtime_pay: 0,
+      bonus: 0,
+      vacation_days: 0,
+      vacation_pay: 0,
+      advances: 0,
+      loan_deduction: result.loanDeduction,
+      other_deductions: 0,
+      gross_salary: result.grossSalary,
       is_custom: false,
     });
+  },
+
+  getEmployeeLoans: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    const { data, error } = await localDb
+      .from('employee_loans')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    if (error) {
+      logger.error('Error fetching employee loans:', error);
+      return;
+    }
+    set({ employeeLoans: data || [] });
+  },
+
+  addLoan: async (loan) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    try {
+      const { data, error } = await queryWithRetry(() =>
+        localDb
+          .from('employee_loans')
+          .insert({
+            ...loan,
+            user_id: user.id,
+            balance: loan.total_amount,
+            status: 'active',
+            updated_at: new Date().toISOString(),
+          })
+          .select()
+          .single()
+      );
+      if (error) {
+        logger.error('Error addLoan:', error);
+        throw new Error(error.message || 'No se pudo agregar el préstamo');
+      }
+      set((state) => ({ employeeLoans: [data, ...state.employeeLoans] }));
+    } catch (error: any) {
+      logger.error('Error en addLoan:', error);
+      throw new Error(error.message || 'Error al agregar préstamo');
+    }
+  },
+
+  updateLoan: async (id, updates) => {
+    const { error } = await queryWithRetry(() =>
+      localDb
+        .from('employee_loans')
+        .update({ ...updates, updated_at: new Date().toISOString() })
+        .eq('id', id)
+    );
+    if (error) throw new Error('No se pudo actualizar el préstamo');
+    set((state) => ({
+      employeeLoans: state.employeeLoans.map(l => (l.id === id ? { ...l, ...updates } : l)),
+    }));
+  },
+
+  deleteLoan: async (id) => {
+    const { error } = await queryWithRetry(() =>
+      localDb.from('employee_loans').delete().eq('id', id)
+    );
+    if (error) throw new Error(error.message || 'No se pudo eliminar el préstamo');
+    set((state) => ({ employeeLoans: state.employeeLoans.filter(l => l.id !== id) }));
+  },
+
+  payLoanInstallment: async (id) => {
+    const loan = get().employeeLoans.find(l => l.id === id);
+    if (!loan) return;
+    const newBalance = Math.max(0, loan.balance - loan.monthly_payment);
+    const newStatus = newBalance <= 0 ? 'paid' : 'active';
+    await get().updateLoan(id, { balance: newBalance, status: newStatus });
+  },
+
+  getLiquidations: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    const { data, error } = await localDb
+      .from('payroll_liquidations')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    if (error) {
+      logger.error('Error fetching liquidations:', error);
+      return;
+    }
+    set({ payrollLiquidations: data || [] });
+  },
+
+  saveLiquidation: async (liq) => {
+    const user = useAuthStore.getState().user;
+    if (!user) throw new Error('No hay usuario autenticado');
+    try {
+      const { data, error } = await queryWithRetry(() =>
+        localDb
+          .from('payroll_liquidations')
+          .insert({ ...liq, user_id: user.id })
+          .select()
+          .single()
+      );
+      if (error) {
+        logger.error('Error saveLiquidation:', error);
+        throw new Error(error.message || 'No se pudo guardar la liquidación');
+      }
+      set((state) => ({ payrollLiquidations: [data, ...state.payrollLiquidations] }));
+    } catch (error: any) {
+      logger.error('Error en saveLiquidation:', error);
+      throw new Error(error.message || 'Error al guardar liquidación');
+    }
+  },
+
+  deleteLiquidation: async (id) => {
+    const { error } = await queryWithRetry(() =>
+      localDb.from('payroll_liquidations').delete().eq('id', id)
+    );
+    if (error) throw new Error(error.message || 'No se pudo eliminar la liquidación');
+    set((state) => ({ payrollLiquidations: state.payrollLiquidations.filter(l => l.id !== id) }));
   },
 
   addCategory: async (name) => {
@@ -3924,7 +4577,7 @@ deletePendingAccount: async (accountId: string) => {
 
     try {
       const { data, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('categories')
           .insert({ user_id: user.id, name: capitalize(name) })
           .select()
@@ -3944,7 +4597,7 @@ deletePendingAccount: async (accountId: string) => {
 
   deleteCategory: async (id) => {
     const { error } = await queryWithRetry(() =>
-      supabase.from('categories').delete().eq('id', id)
+      localDb.from('categories').delete().eq('id', id)
     );
 
     if (error) {
@@ -3958,17 +4611,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    if (!IS_ONLINE) {
-      try {
-        const cached = await getCachedDailyClosings(user.id);
-        if (cached && cached.length > 0) {
-          set({ dailyClosings: cached });
-        }
-      } catch {}
-      return;
-    }
-
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('daily_closings')
       .select('*')
       .eq('user_id', user.id)
@@ -3994,15 +4637,13 @@ deletePendingAccount: async (accountId: string) => {
       const id = crypto.randomUUID();
       const offlineClosing = { ...closing, id, user_id: user.id, created_at: new Date().toISOString(), sales_count: closing.sales_count || 0 } as DailyClosing;
       set((state) => ({ dailyClosings: [offlineClosing, ...state.dailyClosings] }));
-      await addToSyncQueue({ operation: 'createDailyClosing', table: 'daily_closings', payload: { ...closing, id, user_id: user.id, created_at: offlineClosing.created_at } });
-      get().refreshSyncQueueCount();
-      try { await db.dailyClosings.put(offlineClosing); } catch {}
+
       return { success: true };
     }
 
     try {
       const { data, error } = await queryWithRetry(() =>
-        supabase
+        localDb
           .from('daily_closings')
           .insert({ ...closing, user_id: user.id, sales_count: closing.sales_count || 0 })
           .select()
@@ -4029,12 +4670,12 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    const { data: movements } = await supabase
+    const { data: movements } = await localDb
       .from('movements')
       .select('*')
       .eq('user_id', user.id);
 
-    const { data: products } = await supabase
+    const { data: products } = await localDb
       .from('products')
       .select('*')
       .eq('user_id', user.id);
@@ -4046,14 +4687,17 @@ deletePendingAccount: async (accountId: string) => {
       movements
         .filter((m: any) => m.product_id === product.id)
         .forEach((m: any) => {
-          if (m.type === 'ENTRADA') {
+          // ENTRADA/AJUSTE suman;
+          // SALIDA/MERMA restan solo si tienen warehouse_id (las ventas/consumos
+          // desde tránsito no descontaron el almacén y no deben contarse aquí).
+          if (m.type === 'ENTRADA' || m.type === 'AJUSTE') {
             calculatedQty += Number(m.quantity);
-          } else {
-            calculatedQty -= Number(m.quantity);
+          } else if (m.type === 'SALIDA' || m.type === 'MERMA') {
+            if (m.warehouse_id) calculatedQty -= Number(m.quantity);
           }
         });
 
-      await supabase
+      await localDb
         .from('products')
         .update({ quantity: Math.max(0, calculatedQty), updated_at: new Date().toISOString() })
         .eq('id', product.id);
@@ -4074,7 +4718,7 @@ deletePendingAccount: async (accountId: string) => {
     const fileName = `${user.id}/${docType}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     const filePath = `hr-documents/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await localDb.storage
       .from('hr-documents')
       .upload(filePath, file, { upsert: false });
 
@@ -4082,11 +4726,11 @@ deletePendingAccount: async (accountId: string) => {
       return { success: false, error: 'Error al subir el archivo: ' + uploadError.message };
     }
 
-    const { data: urlData } = supabase.storage.from('hr-documents').getPublicUrl(filePath);
+    const { data: urlData } = localDb.storage.from('hr-documents').getPublicUrl(filePath);
 
     const docName = file.name.replace(`.${fileExt}`, '').replace(/_/g, ' ').replace(/[.-]/g, ' ');
 
-    const { error: dbError } = await supabase
+    const { error: dbError } = await localDb
       .from('hr_documents')
       .insert({
         user_id: user.id,
@@ -4098,7 +4742,7 @@ deletePendingAccount: async (accountId: string) => {
       });
 
     if (dbError) {
-      await supabase.storage.from('hr-documents').remove([filePath]);
+      await localDb.storage.from('hr-documents').remove([filePath]);
       return { success: false, error: 'Error al guardar el registro: ' + dbError.message };
     }
 
@@ -4110,7 +4754,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('hr_documents')
       .select('*')
       .eq('user_id', user.id)
@@ -4124,7 +4768,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteHRDocument: async (id: string, fileUrl: string) => {
-    const { error: dbError } = await supabase
+    const { error: dbError } = await localDb
       .from('hr_documents')
       .delete()
       .eq('id', id);
@@ -4135,7 +4779,7 @@ deletePendingAccount: async (accountId: string) => {
 
     const filePath = fileUrl.split('/hr-documents/')[1];
     if (filePath) {
-      await supabase.storage.from('hr-documents').remove([`${filePath}`]);
+      await localDb.storage.from('hr-documents').remove([`${filePath}`]);
     }
 
     set((state) => ({
@@ -4155,7 +4799,7 @@ deletePendingAccount: async (accountId: string) => {
     const fileName = `${user.id}/employees/${employeeId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     const filePath = `hr-documents/${fileName}`;
 
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await localDb.storage
       .from('hr-documents')
       .upload(filePath, file, { upsert: false });
 
@@ -4163,11 +4807,11 @@ deletePendingAccount: async (accountId: string) => {
       return { success: false, error: 'Error al subir el archivo: ' + uploadError.message };
     }
 
-    const { data: urlData } = supabase.storage.from('hr-documents').getPublicUrl(filePath);
+    const { data: urlData } = localDb.storage.from('hr-documents').getPublicUrl(filePath);
 
     const docName = name || file.name.replace(`.${fileExt}`, '').replace(/_/g, ' ').replace(/[.-]/g, ' ');
 
-    const { error: dbError } = await supabase
+    const { error: dbError } = await localDb
       .from('employee_documents')
       .insert({
         user_id: user.id,
@@ -4180,7 +4824,7 @@ deletePendingAccount: async (accountId: string) => {
       });
 
     if (dbError) {
-      await supabase.storage.from('hr-documents').remove([filePath]);
+      await localDb.storage.from('hr-documents').remove([filePath]);
       return { success: false, error: 'Error al guardar el registro: ' + dbError.message };
     }
 
@@ -4192,7 +4836,7 @@ deletePendingAccount: async (accountId: string) => {
     const user = useAuthStore.getState().user;
     if (!user) return;
 
-    const { data, error } = await supabase
+    const { data, error } = await localDb
       .from('employee_documents')
       .select('*')
       .eq('employee_id', employeeId)
@@ -4206,7 +4850,7 @@ deletePendingAccount: async (accountId: string) => {
   },
 
   deleteEmployeeDocument: async (id: string, fileUrl: string) => {
-    const { error: dbError } = await supabase
+    const { error: dbError } = await localDb
       .from('employee_documents')
       .delete()
       .eq('id', id);
@@ -4217,7 +4861,7 @@ deletePendingAccount: async (accountId: string) => {
 
     const filePath = fileUrl.split('/hr-documents/')[1];
     if (filePath) {
-      await supabase.storage.from('hr-documents').remove([`${filePath}`]);
+      await localDb.storage.from('hr-documents').remove([`${filePath}`]);
     }
 
     set((state) => ({
@@ -4226,495 +4870,8 @@ deletePendingAccount: async (accountId: string) => {
   },
 
 forceRefreshData: async () => {
-    logger.info('[forceRefreshData] Refreshing data from Supabase...');
+    logger.info('[forceRefreshData] Refreshing data from local server...');
     const { fetchAll } = useDatabaseStore.getState();
     await fetchAll();
   },
 }));
-
-async function replayPendingSyncQueue(set: any, get: any) {
-  const pendingItems = await db.syncQueue.where('status').equals('pending').toArray();
-  if (pendingItems.length === 0) return;
-
-  if (pendingItems.length > 500) {
-    logger.warn(`[replayPendingSyncQueue] Queue size is ${pendingItems.length}, exceeding limit of 500. Notifying user.`);
-    toast.error('La cola de sincronización offline es demasiado grande. Por favor, sincroniza online cuanto antes.');
-  }
-
-  logger.info(`[replayPendingSyncQueue] Replaying ${pendingItems.length} pending items...`);
-
-  for (const item of pendingItems) {
-    try {
-    logger.info(`[replayPendingSyncQueue] Processing operation: ${item.operation}`);
-    const p = item.payload as any;
-    switch (item.operation) {
-      case 'addProduct':
-        if (p.product) {
-          set((state: any) => {
-            const updatedProducts = state.products.some((x: any) => x.id === p.product.id) ? state.products : [p.product, ...state.products];
-            const updatedMovements = p.movement && !state.movements.some((m: any) => m.id === p.movement.id) ? [p.movement, ...state.movements] : state.movements;
-            
-            const newState = {
-              ...state,
-              products: updatedProducts,
-              movements: updatedMovements,
-            };
-            
-            if (p.productWarehouse && Array.isArray(p.productWarehouse)) {
-              newState.productWarehouse = [...state.productWarehouse, ...p.productWarehouse];
-            }
-            return newState;
-          });
-          // Usar la versión actual del producto (con in_transit computado) en vez de la stale del sync queue
-          const enrichedProduct = get().products.find((x: any) => x.id === p.product.id);
-          if (enrichedProduct) {
-            try { await db.products.put(enrichedProduct).catch(() => {}); } catch {}
-          } else {
-            try { await db.products.put(p.product).catch(() => {}); } catch {}
-          }
-          if (p.movement) {
-            const enrichedMovement = get().movements.find((m: any) => m.id === p.movement.id);
-            if (enrichedMovement) {
-              try { await db.movements.put(enrichedMovement).catch(() => {}); } catch {}
-            } else {
-              try { await db.movements.put(p.movement).catch(() => {}); } catch {}
-            }
-          }
-          if (p.productWarehouse && Array.isArray(p.productWarehouse) && p.productWarehouse.length > 0) {
-            try { await db.productWarehouse.bulkPut(get().productWarehouse).catch(() => {}); } catch {}
-          }
-          // También persistir transitItems para que no se pierdan al reabrir offline
-          try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-          try { await db.products.bulkPut(get().products).catch(() => {}); } catch {}
-        }
-        break;
-      case 'updateProduct':
-        set((state: any) => ({
-          ...state,
-          products: state.products.map((x: any) => x.id === p.id ? { ...x, ...p.updates } : x),
-        }));
-        try { await db.products.bulkPut(get().products).catch(() => {}); } catch {}
-        break;
-      case 'deleteProduct':
-        set((state: any) => ({
-          ...state,
-          products: state.products.map((x: any) => x.id === p.id ? { ...x, is_active: false } : x),
-        }));
-        try { await db.products.bulkPut(get().products).catch(() => {}); } catch {}
-        break;
-      case 'addMovement':
-        set((state: any) => {
-          if (state.movements.some((m: any) => m.id === p.id)) return state;
-          const newMovement = { ...p } as any;
-          let newState = { ...state, movements: [newMovement, ...state.movements] };
-
-          if (newMovement.type === 'SALIDA') {
-            const transitId = ('ti-' + (newMovement.id || '').replace(/-/g, '').substring(0, 14)) as string;
-            const transitItem = {
-              id: transitId,
-              user_id: newMovement.user_id,
-              product_id: newMovement.product_id,
-              quantity: Number(newMovement.quantity),
-              consumed: 0,
-              remaining: Number(newMovement.quantity),
-              reason: newMovement.reason || 'Enviado a cocina/preparacion',
-              sent_date: newMovement.date || new Date().toISOString(),
-              created_at: newMovement.created_at || new Date().toISOString(),
-              warehouse_id: newMovement.warehouse_id || null,
-            } as any;
-
-            if (newMovement.warehouse_id) {
-              const pw = state.productWarehouse.find((pw: any) => pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id);
-              const currentQty = pw ? Number(pw.quantity) : 0;
-              let newQty = Math.max(0, currentQty - Number(newMovement.quantity));
-
-              newState = {
-                ...newState,
-                productWarehouse: state.productWarehouse.map((pw: any) =>
-                  pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id
-                    ? { ...pw, quantity: newQty }
-                    : pw
-                ),
-                transitItems: [transitItem, ...state.transitItems],
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: Math.max(0, newQty), in_transit: Number(pr.in_transit || 0) + Number(newMovement.quantity) }
-                    : pr
-                ),
-              };
-            } else {
-              const product = state.products.find((pr: any) => pr.id === newMovement.product_id);
-              let newQuantity = Math.max(0, Number(product?.quantity || 0) - Number(newMovement.quantity));
-              let newInTransit = Number(product?.in_transit || 0) + Number(newMovement.quantity);
-
-              newState = {
-                ...newState,
-                transitItems: [transitItem, ...state.transitItems],
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: newQuantity, in_transit: newInTransit }
-                    : pr
-                ),
-              };
-            }
-          }
-          else if (newMovement.type === 'ENTRADA' || newMovement.type === 'AJUSTE') {
-            if (newMovement.warehouse_id) {
-              const pw = state.productWarehouse.find((pw: any) => pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id);
-              const currentQty = pw ? Number(pw.quantity) : 0;
-              let newQty = Math.max(0, currentQty + Number(newMovement.quantity));
-              newState = {
-                ...newState,
-                productWarehouse: state.productWarehouse.map((pw: any) =>
-                  pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id
-                    ? { ...pw, quantity: newQty }
-                    : pw
-                ),
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: Math.max(0, newQty) }
-                    : pr
-                ),
-              };
-            } else {
-              const product = state.products.find((pr: any) => pr.id === newMovement.product_id);
-              let newQuantity = Math.max(0, Number(product?.quantity || 0) + Number(newMovement.quantity));
-              newState = {
-                ...newState,
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: newQuantity }
-                    : pr
-                ),
-              };
-            }
-          }
-          else if (newMovement.type === 'MERMA') {
-            if (newMovement.warehouse_id) {
-              const pw = state.productWarehouse.find((pw: any) => pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id);
-              const currentQty = pw ? Number(pw.quantity) : 0;
-              let newQty = Math.max(0, currentQty - Number(newMovement.quantity));
-              newState = {
-                ...newState,
-                productWarehouse: state.productWarehouse.map((pw: any) =>
-                  pw.product_id === newMovement.product_id && pw.warehouse_id === newMovement.warehouse_id
-                    ? { ...pw, quantity: newQty }
-                    : pw
-                ),
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: Math.max(0, newQty) }
-                    : pr
-                ),
-              };
-            } else {
-              const product = state.products.find((pr: any) => pr.id === newMovement.product_id);
-              let newQuantity = Math.max(0, Number(product?.quantity || 0) - Number(newMovement.quantity));
-              newState = {
-                ...newState,
-                products: state.products.map((pr: any) =>
-                  pr.id === newMovement.product_id
-                    ? { ...pr, quantity: newQuantity }
-                    : pr
-                ),
-              };
-            }
-          }
-          return newState;
-        });
-        // Después del replay, siempre persistir a Dexie para todos los tipos de movimiento
-        {
-          const mType = (p as any).type;
-          if (mType === 'SALIDA') {
-            try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-          }
-          try { await db.products.bulkPut(get().products).catch(() => {}); } catch {}
-          try { await db.movements.bulkPut(get().movements).catch(() => {}); } catch {}
-          if ((p as any).warehouse_id) {
-            try { await db.productWarehouse.bulkPut(get().productWarehouse).catch(() => {}); } catch {}
-          }
-        }
-        break;
-      case 'addSale':
-        if (p.sale) {
-          const saleWithItems = { ...p.sale, items: p.sale_items || [] };
-          set((state: any) => ({
-            ...state,
-            sales: state.sales.some((s: any) => s.id === saleWithItems.id) ? state.sales : [saleWithItems, ...state.sales],
-          }));
-          if (p.itemsToConsume && Array.isArray(p.itemsToConsume)) {
-            for (const ci of p.itemsToConsume) {
-              set((state: any) => {
-                let remainingLocal = ci.qtyNeeded;
-                let consumedLocal = 0;
-                const updatedTransitItems = state.transitItems
-                  .filter((t: any) => t.product_id === ci.productId && t.remaining > 0)
-                  .sort((a: any, b: any) => new Date(a.sent_date).getTime() - new Date(b.sent_date).getTime())
-                  .map((t: any) => {
-                    if (remainingLocal <= 0) return t;
-                    const toConsume = Math.min(t.remaining, remainingLocal);
-                    remainingLocal -= toConsume;
-                    consumedLocal += toConsume;
-                    return { ...t, remaining: t.remaining - toConsume, consumed: (t.consumed || 0) + toConsume };
-                  });
-                const newInTransit = Math.max(0, Number(state.products.find((pr: any) => pr.id === ci.productId)?.in_transit || 0) - consumedLocal);
-                return {
-                  ...state,
-                  transitItems: updatedTransitItems,
-                  products: state.products.map((pr: any) => pr.id === ci.productId ? { ...pr, in_transit: newInTransit } : pr),
-                };
-              });
-            }
-            try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-          }
-        }
-        break;
-      case 'addRecipe':
-        if (p.recipe) {
-          const recipeWithIngredients = { ...p.recipe, ingredients: p.ingredients || [] };
-          set((state: any) => ({
-            ...state,
-            recipes: state.recipes.some((r: any) => r.id === recipeWithIngredients.id) ? state.recipes : [recipeWithIngredients, ...state.recipes],
-          }));
-          try { await db.recipes.bulkPut(get().recipes).catch(() => {}); } catch {}
-        }
-        break;
-      case 'updateRecipe':
-        set((state: any) => ({
-          ...state,
-          recipes: state.recipes.map((r: any) => r.id === p.id ? { ...r, ...p.updates } : r),
-        }));
-        try { await db.recipes.bulkPut(get().recipes).catch(() => {}); } catch {}
-        break;
-      case 'deleteRecipe':
-        set((state: any) => ({
-          recipes: state.recipes.filter((r: any) => r.id !== p.id),
-        }));
-        try { await db.recipes.delete(p.id).catch(() => {}); } catch {}
-        break;
-      case 'createPendingAccount':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.some((a: any) => a.id === p.id) ? state.pendingAccounts : [p, ...state.pendingAccounts],
-        }));
-        break;
-      case 'justifyMovement':
-        set((state: any) => ({
-          movements: state.movements.map((m: any) =>
-            m.id === p.id ? { ...m, status: 'JUSTIFICADO', justification: p.justification, justification_date: new Date().toISOString() } : m
-          ),
-        }));
-        try { await db.movements.bulkPut(get().movements).catch(() => {}); } catch {}
-        break;
-      case 'updatePendingAccount':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.map((a: any) =>
-            a.id === p.accountId ? { ...a, ...p.updates, updated_at: new Date().toISOString() } : a
-          ),
-        }));
-        break;
-      case 'addItemsToPendingAccount':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.map((a: any) => {
-            if (a.id !== p.accountId) return a;
-            const newItems = (p.items || []).map((i: any) => ({ ...i, added_at: i.added_at || new Date().toISOString() }));
-            const allItems = [...(a.items || []), ...newItems];
-            const newTotal = p.isAccountHouse ? 0 : allItems.reduce((sum: number, i: any) => sum + (i.subtotal || 0), 0);
-            return { ...a, items: allItems, total_amount: newTotal, is_account_house: p.isAccountHouse, sale_type: p.saleType, updated_at: new Date().toISOString() };
-          }),
-        }));
-        break;
-      case 'updatePendingAccountItems':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.map((a: any) => a.id === p.accountId ? { ...a, items: p.items, updated_at: new Date().toISOString() } : a),
-        }));
-        break;
-      case 'togglePendingAccountType':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.map((a: any) => a.id === p.accountId ? { ...a, is_account_house: p.is_account_house, total_amount: p.is_account_house ? 0 : a.items?.reduce((sum: number, i: any) => sum + i.subtotal, 0) || 0 } : a),
-        }));
-        break;
-      case 'deletePendingAccount':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.filter((a: any) => a.id !== p.accountId),
-          transitItems: p.transitRestores?.length ? state.transitItems.map((t: any) => {
-            const restore = p.transitRestores.find((r: any) => r.transitItemId === t.id);
-            return restore ? { ...t, remaining: t.remaining + restore.quantity } : t;
-          }) : state.transitItems,
-        }));
-        break;
-      case 'markPendingAccountPaid':
-        set((state: any) => ({
-          pendingAccounts: state.pendingAccounts.filter((a: any) => a.id !== p.accountId),
-        }));
-        break;
-      case 'createDailyClosing':
-        set((state: any) => ({
-          dailyClosings: state.dailyClosings.some((d: any) => d.id === p.id) ? state.dailyClosings : [p, ...state.dailyClosings],
-        }));
-        break;
-      case 'cancelTransit':
-        set((state: any) => {
-          const transitItem = state.transitItems.find((t: any) => t.id === p.transitItemId);
-          if (!transitItem) return state;
-          const product = state.products.find((pr: any) => pr.id === p.productId);
-          const newRemaining = transitItem.remaining - p.quantity;
-          const newInTransit = Math.max(0, Number(product?.in_transit || 0) - p.quantity);
-          const newQty = Number(product?.quantity || 0) + p.quantity;
-          return {
-            transitItems: state.transitItems.map((t: any) => t.id === p.transitItemId ? { ...t, remaining: newRemaining } : t).filter((t: any) => t.remaining > 0),
-            products: state.products.map((pr: any) => pr.id === p.productId ? { ...pr, in_transit: newInTransit, quantity: newQty } : pr),
-            productWarehouse: state.productWarehouse.map((pw: any) =>
-              pw.product_id === p.productId && pw.warehouse_id === transitItem.warehouse_id
-                ? { ...pw, quantity: Number(pw.quantity) + p.quantity } : pw
-            ),
-          };
-        });
-        try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-        try { await db.products.bulkPut(get().products).catch(() => {}); } catch {}
-        break;
-      case 'registerWasteFromTransit':
-        set((state: any) => {
-          const transitItem = state.transitItems.find((t: any) => t.id === p.transitItemId);
-          if (!transitItem) return state;
-          const newRemaining = transitItem.remaining - p.quantity;
-          const newInTransit = Math.max(0, Number(state.products.find((pr: any) => pr.id === p.productId)?.in_transit || 0) - p.quantity);
-          return {
-            transitItems: state.transitItems.map((t: any) => t.id === p.transitItemId ? { ...t, remaining: newRemaining } : t).filter((t: any) => t.remaining > 0),
-            products: state.products.map((pr: any) => pr.id === p.productId ? { ...pr, in_transit: newInTransit } : pr),
-          };
-        });
-        try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-        break;
-      case 'registerManualConsumption':
-        set((state: any) => {
-          const transitItem = state.transitItems.find((t: any) => t.id === p.transitItemId);
-          if (!transitItem) return state;
-          const newRemaining = transitItem.remaining - p.quantity;
-          const newConsumed = (transitItem.consumed || 0) + p.quantity;
-          const newInTransit = Math.max(0, Number(state.products.find((pr: any) => pr.id === p.productId)?.in_transit || 0) - p.quantity);
-          return {
-            transitItems: state.transitItems.map((t: any) => t.id === p.transitItemId ? { ...t, remaining: newRemaining, consumed: newConsumed } : t).filter((t: any) => t.remaining > 0),
-            products: state.products.map((pr: any) => pr.id === p.productId ? { ...pr, in_transit: newInTransit } : pr),
-          };
-        });
-        try { await db.transitItems.bulkPut(get().transitItems).catch(() => {}); } catch {}
-        break;
-      case 'updateAccessPinAttempts':
-        set((state: any) => ({
-          accessPins: state.accessPins.map((pin: any) =>
-            pin.id === p.pinId ? { ...pin, ...(p.failed_attempts !== undefined && { failed_attempts: p.failed_attempts }), ...(p.blocked_until !== undefined && { blocked_until: p.blocked_until }) } : pin
-          ),
-        }));
-        break;
-    }
-    } catch (e) {
-      logger.error(`[replayPendingSyncQueue] Error processing ${item.operation}:`, e);
-    }
-  }
-
-  // Persistencia consolidada al final del replay — garantiza que Dexie
-  // refleje el estado completo de Zustand después de procesar todos los items
-  try {
-    const finalState = get();
-    await db.transitItems.bulkPut(finalState.transitItems).catch(() => {});
-    await db.products.bulkPut(finalState.products).catch(() => {});
-    await db.movements.bulkPut(finalState.movements).catch(() => {});
-    await db.productWarehouse.bulkPut(finalState.productWarehouse).catch(() => {});
-  } catch {}
-}
-
-async function restoreFromCache(userId: string) {
-  const [products, movements, warehouses, transitAll, sales, recipes, employees, categories, pendingAccounts, dailyClosings, accessPins, productWarehouse] = await Promise.all([
-    getCachedProducts(userId),
-    getCachedMovements(userId),
-    getCachedWarehouses(userId),
-    getCachedTransitItems(userId),
-    getCachedSales(userId),
-    getCachedRecipes(userId),
-    getCachedEmployees(userId),
-    getCachedCategories(userId),
-    getCachedPendingAccounts(userId),
-    getCachedDailyClosings(userId),
-    getCachedAccessPins(userId),
-    getCachedProductWarehouse(),
-  ]);
-
-  const transitItems = transitAll.filter(t => t.remaining > 0);
-
-  // Recalcular quantity desde los movimientos (más fiable que el valor almacenado en Dexie)
-  const qtyFromMovements = new Map<string, number>();
-  for (const m of movements) {
-    const current = qtyFromMovements.get(m.product_id) || 0;
-    if (m.type === 'ENTRADA') qtyFromMovements.set(m.product_id, current + Number(m.quantity));
-    else if (m.type === 'SALIDA' || m.type === 'MERMA') qtyFromMovements.set(m.product_id, current - Number(m.quantity));
-    else if (m.type === 'AJUSTE') qtyFromMovements.set(m.product_id, current + Number(m.quantity));
-  }
-
-  const productsWithTransit = products.map(p => {
-    const totalInTransit = transitItems
-      .filter(t => t.product_id === p.id)
-      .reduce((sum, t) => sum + t.remaining, 0);
-    const computedQty = qtyFromMovements.has(p.id)
-      ? Math.max(0, qtyFromMovements.get(p.id)!)
-      : p.quantity;
-    return { ...p, quantity: computedQty, in_transit: totalInTransit };
-  });
-
-  // Recalcular productWarehouse.quantity desde movimientos con warehouse_id
-  const qtyPerWarehouse = new Map<string, number>();
-  for (const m of movements) {
-    if (!(m as any).warehouse_id) continue;
-    const key = `${m.product_id}::${(m as any).warehouse_id}`;
-    const current = qtyPerWarehouse.get(key) || 0;
-    if (m.type === 'ENTRADA') qtyPerWarehouse.set(key, current + Number(m.quantity));
-    else if (m.type === 'SALIDA' || m.type === 'MERMA') qtyPerWarehouse.set(key, current - Number(m.quantity));
-    else if (m.type === 'AJUSTE') qtyPerWarehouse.set(key, current + Number(m.quantity));
-  }
-
-  // Enriquecer productWarehouse con quantity + in_transit calculados
-  const productWarehouseWithTransit = productWarehouse.map(pw => {
-    const transitForWarehouse = transitItems
-      .filter(t => t.product_id === pw.product_id && t.warehouse_id === pw.warehouse_id)
-      .reduce((sum, t) => sum + t.remaining, 0);
-    const key = `${pw.product_id}::${pw.warehouse_id}`;
-    const computedQty = qtyPerWarehouse.has(key)
-      ? Math.max(0, qtyPerWarehouse.get(key)!)
-      : pw.quantity;
-    return { ...pw, quantity: computedQty, in_transit: transitForWarehouse };
-  });
-
-  // Restaurar currentWarehouseId desde main warehouse (o el primero disponible)
-  const mainWarehouse = warehouses.find(w => w.is_main) || warehouses[0];
-  const currentWarehouseId = useDatabaseStore.getState().currentWarehouseId || mainWarehouse?.id || '';
-
-  useDatabaseStore.setState({
-    products: productsWithTransit,
-    movements,
-    warehouses,
-    transitItems,
-    sales,
-    recipes,
-    employees,
-    categories,
-    pendingAccounts: pendingAccounts.filter(p => p.status === 'pending'),
-    dailyClosings,
-    accessPins,
-    productWarehouse: productWarehouseWithTransit,
-    currentWarehouseId,
-    isLoading: false,
-  });
-
-  // Solo ejecutar replay del sync queue si hay conexión.
-  // Offline los datos de Dexie ya están en su estado final; el replay
-  // causaría doble consumo de transitItems y parpadeo a 0 en la UI.
-  if (IS_ONLINE) {
-    await replayPendingSyncQueue(useDatabaseStore.setState, useDatabaseStore.getState);
-
-    const postReplayTransit = useDatabaseStore.getState().transitItems;
-    if (transitItems.length > 0 && postReplayTransit.length === 0) {
-      logger.warn('⚠️ replayPendingSyncQueue eliminó transitItems — restaurando...');
-      useDatabaseStore.setState({ transitItems });
-      try { await db.transitItems.bulkPut(transitItems).catch(() => {}); } catch {}
-    }
-  }
-}

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { localDb as supabase } from '../lib/db/localClient';
+import { localDb } from '../lib/db/localClient';
 import { Search, X, ShoppingBag, AlertCircle, Loader2, MapPin, Clock, Phone } from 'lucide-react';
 import { Input } from '../components/ui/input';
 
@@ -44,7 +44,7 @@ export default function MenuView() {
         setLoading(true);
         setError(null);
         
-        const menuRes = await supabase.fetchMenu(businessId);
+        const menuRes = await localDb.fetchMenu(businessId);
         if (menuRes.error) {
           setError(menuRes.error?.message || 'Error al cargar el menú.');
           return;
@@ -63,7 +63,7 @@ export default function MenuView() {
         }
 
       } catch (err) {
-        console.error('Error fetching menu data:', err);
+        if (import.meta.env.DEV) console.error('Error fetching menu data:', err);
         setError('Error al cargar el menú.');
       } finally {
         setLoading(false);

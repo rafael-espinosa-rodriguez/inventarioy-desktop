@@ -1,9 +1,7 @@
 import { create } from 'zustand';
-import { localDb as supabase } from '../lib/db/localClient';
-import { clearLocalData } from '../lib/dexieDb';
+import { localDb } from '../lib/db/localClient';
 import { useDatabaseStore } from './dbStore';
 import { logger } from '../lib/logger';
-import { syncEngine } from '../lib/syncEngine';
 import { setRealtimeUserId } from '../lib/realtimeSync';
 
 // Versión desktop: el servidor local siempre está disponible.
@@ -72,6 +70,8 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (pin: string, businessCode?: string) => Promise<{ success: boolean; error?: string }>;
+  resetPin: (payload: { code: string; resetKey: string; newPin: string }) => Promise<{ success: boolean; error?: string }>;
+  generatePinResetKey: (code: string) => Promise<{ success: boolean; key?: string; formattedKey?: string; expiresAt?: string; error?: string }>;
   register: (email: string, password: string, name: string, businessName: string, phone?: string) => Promise<{ success: boolean; error?: string }>;
   forgotPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
@@ -162,9 +162,9 @@ const translateError = (message: string): string => {
     'Network request failed': 'Error de solicitud de red',
     'Invalid URL': 'URL inválida',
     'Missing requirements for Sozial Login': 'Requisitos faltantes para inicio de sesión social',
-    'Failed to fetch': 'Sin conexión a internet',
-    'Failed to fetch (offline)': 'Sin conexión a internet',
-    'NetworkError': 'Sin conexión a internet',
+    'Failed to fetch': 'No se pudo conectar con el servidor local',
+    'Failed to fetch (offline)': 'No se pudo conectar con el servidor local',
+    'NetworkError': 'No se pudo conectar con el servidor local',
   };
 
   if (errorTranslations[message]) {
@@ -190,7 +190,7 @@ const translateError = (message: string): string => {
     return 'Demasiadas solicitudes. Por favor, espera un momento';
   }
   if (message.includes('network') || message.includes('fetch')) {
-    return 'Error de conexión. Verifique su internet';
+    return 'Error de conexión con el servidor local';
   }
 
   return message;
@@ -248,7 +248,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
     try {
       const { data: { session } } = await Promise.race([
-        supabase.auth.getSession(),
+        localDb.auth.getSession(),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('AuthTimeout')), 15000)
         ),
@@ -297,7 +297,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     logger.info('fetchUser llamado...');
     try {
       const { data, error } = (await withTimeout(
-        supabase.auth.getSession(),
+        localDb.auth.getSession(),
         10000
       )) as any;
 
@@ -344,7 +344,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       };
 
       // Consultar estado de licencia real (trial / activa / vencida)
-      const licenseRes = (await supabase.license.status()) as any;
+      const licenseRes = (await localDb.license.status()) as any;
       if (licenseRes?.data) {
         const lic: LicenseInfo = {
           status: licenseRes.data.status || 'trialing',
@@ -384,7 +384,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   login: async (pin: string) => {
     try {
-      const { data, error } = (await supabase.auth.signInWithPassword({
+      const { data, error } = (await localDb.auth.signInWithPassword({
         pin,
       })) as any;
 
@@ -396,8 +396,10 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       if (data?.success) {
         // Guardar rol verificado (sistema de roles por PIN)
         if (data.pinRole) {
+          const modules = Array.isArray(data.pinModules) ? data.pinModules.map(String) : [];
           localStorage.setItem('verifiedRole', data.pinRole);
           localStorage.setItem('verifiedRoleName', data.pinName || '');
+          localStorage.setItem('verifiedModules', JSON.stringify(modules));
         }
 
         const userLoaded = await get().fetchUser();
@@ -418,13 +420,29 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     return { success: false, error: 'El registro no está disponible en la versión desktop. Use el PIN configurado por el administrador.' };
   },
 
+  resetPin: async ({ code, resetKey, newPin }) => {
+    try {
+      const res = (await localDb.auth.resetPin({
+        code: String(code).trim().toUpperCase(),
+        resetKey: String(resetKey).trim(),
+        newPin: String(newPin),
+      })) as any;
+      if (res?.error) {
+        return { success: false, error: res.error?.message || 'No se pudo restablecer el PIN' };
+      }
+      return { success: true };
+    } catch (err: any) {
+      logger.error('Error restableciendo PIN:', err);
+      return { success: false, error: 'No se pudo conectar con el servidor local.' };
+    }
+  },
+
   forgotPassword: async () => {
     return { success: false, error: 'La recuperación de contraseña no está disponible en la versión desktop. Contacte al administrador.' };
   },
 
   logout: async () => {
     logger.info('Logout llamado...');
-    syncEngine.stop();
     setRealtimeUserId(null);
     try {
       // Código SQLite eliminado
@@ -433,6 +451,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       localStorage.removeItem('inventarioy_user');
       localStorage.removeItem('verifiedRole');
       localStorage.removeItem('verifiedRoleName');
+      localStorage.removeItem('verifiedModules');
       localStorage.setItem('inventarioy_logged_out', '1');
 
       _isInitializing = false;
@@ -471,27 +490,15 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
         departmentSearchTerm: '',
         payrollMonthFilter: 0,
         payrollYearFilter: 0,
-        syncQueueCount: 0,
-        syncStatus: 'idle',
-        syncProgress: null,
         isLoading: true,
       });
       logger.info('Zustand dbStore reseteado');
 
-      await supabase.auth.signOut();
+      await localDb.auth.signOut();
       logger.info('SignOut exitoso');
-
-      try {
-        await clearLocalData();
-        logger.info('IndexedDB limpiado');
-      } catch (dbErr) {
-        logger.warn('Error limpiando IndexedDB:', dbErr);
-      }
     } catch (err) {
       logger.error('Error en logout:', err);
     } finally {
-      // Reactivar el motor de sincronización para el próximo usuario
-      syncEngine.start();
       // Forzar redirección
       logger.info('Redireccionando...');
       window.location.href = '/';
@@ -505,7 +512,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     const newSubscription = { ...user.subscription, ...updates };
 
     try {
-      await supabase.settings.set('subscription', {
+      await localDb.settings.set('subscription', {
         status: newSubscription.status,
         validUntil: newSubscription.validUntil,
       });
@@ -520,7 +527,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   activateLicense: async (key) => {
     try {
-      const res = (await supabase.license.activate(String(key).trim())) as any;
+      const res = (await localDb.license.activate(String(key).trim())) as any;
       if (res?.error) {
         return { success: false, error: res.error?.message || 'Clave de activación inválida' };
       }
@@ -563,7 +570,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     const { user } = get();
     if (!user) return;
     try {
-      const res = (await supabase.license.status()) as any;
+      const res = (await localDb.license.status()) as any;
       if (!res?.data) return;
       const lic: LicenseInfo = {
         status: res.data.status || 'trialing',
@@ -592,7 +599,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
   generateLicense: async (code, months, until) => {
     try {
-      const res = (await supabase.license.generate({
+      const res = (await localDb.license.generate({
         code: String(code).trim(),
         months,
         until: until ? String(until).trim() : undefined,
@@ -607,9 +614,27 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     }
   },
 
+  generatePinResetKey: async (code) => {
+    try {
+      const res = (await localDb.pins.generateResetKey(String(code).trim())) as any;
+      if (res?.error) {
+        return { success: false, error: res.error?.message || 'No se pudo generar la clave' };
+      }
+      return {
+        success: true,
+        key: res.data?.key,
+        formattedKey: res.data?.formattedKey,
+        expiresAt: res.data?.expiresAt,
+      };
+    } catch (err: any) {
+      logger.error('Error generando clave de restablecimiento de PIN:', err);
+      return { success: false, error: 'No se pudo conectar con el servidor local.' };
+    }
+  },
+
   simulateLicense: async (action, options) => {
     try {
-      const res = (await supabase.license.simulate({
+      const res = (await localDb.license.simulate({
         action: String(action).trim(),
         code: options?.code ? String(options.code).trim() : undefined,
         months: options?.months,

@@ -10,7 +10,7 @@ Este documento establece las directrices arquitectónicas, de diseño y de desar
 *   **Enrutamiento:** React Router v7 para navegación tipo SPA.
 *   **Gestión de Estado:** Zustand 5 (estado global en `authStore` y `dbStore`).
 *   **Backend local:** Fastify embebido en el proceso Electron (`electron/server/`).
-*   **Base de Datos:** SQLite local vía `better-sqlite3` (`electron/db/`).
+*   **Base de Datos:** SQLite local vía `node:sqlite` (`DatabaseSync`, API nativa de Node 22+ — `electron/db/`).
 *   **Iconografía:** Lucide React.
 *   **Animaciones:** GSAP.
 *   **Gráficos:** Recharts.
@@ -47,7 +47,7 @@ Este documento establece las directrices arquitectónicas, de diseño y de desar
 
 ### 3.3. Gestión de Datos
 *   **Backend local:** Todo `fetch` del renderer va a rutas relativas que resuelven contra el Fastify local (`electron/server/index.ts`).
-*   **Shim `localClient.ts`:** El `src/lib/db/localClient.ts` se importa como `localDb as supabase` en todo el frontend. NO existe tráfico a internet en runtime.
+*   **Shim `localClient.ts`:** El `src/lib/db/localClient.ts` se importa como `localDb` en todo el frontend (API tipo Supabase sobre el Fastify local). NO existe tráfico a internet en runtime.
 *   **Migraciones:** SQLite versionadas en `electron/db/schema.ts`. No hay staging — aplicar migraciones con cuidado.
 
 ### 3.4. Autenticación y Autorización

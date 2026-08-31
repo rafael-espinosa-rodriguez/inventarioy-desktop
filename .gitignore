@@ -22,3 +22,10 @@ capture-screenshots.mjs
 inventarioy-reel-1/
 renders/
 skills-lock.json
+# Artefactos históricos / limpieza
+docs/desktop-history/
+docs/*.pdf
+my-video/
+documents/
+suite-out.txt
+*.rar

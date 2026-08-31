@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Lock, Eye, EyeOff, Store, Loader2, ArrowLeft } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { localDb as supabase } from '../lib/db/localClient';
+import { localDb } from '../lib/db/localClient';
 import { toast } from 'sonner';
 import InventarioYLogo from '../components/InventarioYLogo';
 
@@ -26,7 +26,7 @@ export default function AccessPage() {
 
   const searchBusiness = async () => {
     try {
-      const { data: profiles, error } = (await supabase
+      const { data: profiles, error } = (await localDb
         .from('user_session')
         .select('name, businessName')
         .eq('business_code', code.toLowerCase().trim())
@@ -40,7 +40,7 @@ export default function AccessPage() {
         setFoundBusiness(null);
       }
     } catch (err) {
-      console.error('Error searching business:', err);
+      if (import.meta.env.DEV) console.error('Error searching business:', err);
       setFoundBusiness(null);
     }
   };
@@ -55,12 +55,12 @@ export default function AccessPage() {
 
     try {
       // Verify PIN via local server RPC (PIN hashes never leave the server)
-      const { data, error: rpcError } = (await supabase.rpc('verify_access_pin', {
+      const { data, error: rpcError } = (await localDb.rpc('verify_access_pin', {
         p_pin: pin,
       })) as any;
 
       if (rpcError) {
-        console.error('Error verifying PIN:', rpcError);
+        if (import.meta.env.DEV) console.error('Error verifying PIN:', rpcError);
         toast.error('Error al verificar el PIN. Intente de nuevo.');
         setIsLoading(false);
         return;
@@ -90,11 +90,13 @@ export default function AccessPage() {
 
       localStorage.setItem('verifiedRole', data.role);
       localStorage.setItem('verifiedRoleName', data.pin_name || '');
+      const modules = Array.isArray(data.modules) ? data.modules.map(String) : [];
+      localStorage.setItem('verifiedModules', JSON.stringify(modules));
 
       toast.success('¡Acceso exitoso!');
       navigate('/dashboard');
     } catch (err) {
-      console.error('Error verifying PIN:', err);
+      if (import.meta.env.DEV) console.error('Error verifying PIN:', err);
       toast.error('Error al verificar el PIN. Intente de nuevo.');
     } finally {
       setIsLoading(false);

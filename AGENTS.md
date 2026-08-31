@@ -1,7 +1,7 @@
 # AGENTS.md — InventarioY Desktop
 
 ## Stack
-React 19 + TypeScript 5.8 + Vite 6 + Tailwind v4 + Zustand 5 + Fastify local + SQLite (better-sqlite3) + Electron.
+React 19 + TypeScript 5.8 + Vite 6 + Tailwind v4 + Zustand 5 + Fastify local + SQLite (`node:sqlite`, API experimental de Node 22+) + Electron.
 
 ## Setup / Entorno
 - `npm install` (no requiere API keys; la app es 100% local).
@@ -17,8 +17,8 @@ React 19 + TypeScript 5.8 + Vite 6 + Tailwind v4 + Zustand 5 + Fastify local + S
 └── preload.ts   # expone window.desktop
 src/
 ├── store/       # authStore + dbStore (Zustand)
-├── lib/         # db/localClient.ts (shim localDb), syncEngine (legacy), unitConversion, etc.
-├── components/  # ui/ + shared (LicenseBanner, OfflineLimitBanner, SyncQueuePanel...)
+├── lib/         # db/localClient.ts (shim localDb), unitConversion, etc.
+├── components/  # ui/ + shared (LicenseBanner, OfflineLimitBanner...)
 ├── pages/       # Landing, Login, Register (setup) + Dashboard + dashboard/ (16 views)
 ├── design-system/# ThemeProvider + tokens
 └── hooks/       # useIsOnline, useOfflineDisabled
@@ -34,7 +34,7 @@ Usar grep/búsqueda por nombre de interfaz (`Product`, `Sale`, `Recipe`...) o m�
 - Licencia offline: trial 7 días + clave ed25519 (ver `electron/server/license.ts`).
 
 ## Modelo de datos / Backend
-- **Backend local**: Fastify embebido. El renderer usa `src/lib/db/localClient.ts` (shim `localDb as supabase`).
+- **Backend local**: Fastify embebido. El renderer usa `src/lib/db/localClient.ts` (shim `localDb`, API tipo Supabase sobre HTTP local).
 - **Base de datos**: SQLite local. Migraciones en `electron/db/schema.ts`.
 - **NO hay tráfico a internet en runtime** (ni Supabase, ni Google Fonts, ni PWA).
 - Endpoints de licencia: `GET /api/license/status`, `POST /api/license/activate`.

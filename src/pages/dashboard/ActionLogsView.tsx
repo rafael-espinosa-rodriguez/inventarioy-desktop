@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { Search, Calendar, FileText, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
-import { useDatabaseStore, ROLE_LABELS } from '../../store/dbStore';
+import { useDatabaseStore, getRoleLabel } from '../../store/dbStore';
 import { usePersistentFilters } from '../../lib/hooks/usePersistentFilters';
 import { MODULE_LABELS, ACTION_LABELS, DETAIL_KEY_TRANSLATIONS } from '../../lib/constants';
 
@@ -144,7 +144,7 @@ export default function ActionLogsView() {
     try {
       getActionLogs();
     } catch (err) {
-      console.error('[ActionLogsView] Error loading logs:', err);
+      if (import.meta.env.DEV) console.error('[ActionLogsView] Error loading logs:', err);
     }
   }, []);
 
@@ -154,7 +154,7 @@ export default function ActionLogsView() {
 
   const uniqueRoles = useMemo(() => {
     const pins = accessPins || [];
-    const roles = pins.map(pin => ROLE_LABELS[pin.role] || pin.role).filter(Boolean);
+    const roles = pins.map(pin => getRoleLabel(pin.role)).filter(Boolean);
     return Array.from(new Set(roles)).sort();
   }, [accessPins]);
 
@@ -168,7 +168,7 @@ export default function ActionLogsView() {
         (log.details?.product_name || '').toLowerCase().includes(searchTerm.toLowerCase());
       
       const matchesRole = !roleFilter || (accessPins || []).some(pin => 
-        ROLE_LABELS[pin.role] === roleFilter && pin.role === log.role
+        getRoleLabel(pin.role) === roleFilter && pin.role === log.role
       );
       
       const logDate = new Date(log.created_at);
@@ -370,7 +370,7 @@ export default function ActionLogsView() {
                     const result = await fetchMore(50);
                     setHasMoreLogs(result.hasMore);
                   } catch (error) {
-                    console.error('Error loading more logs:', error);
+                    if (import.meta.env.DEV) console.error('Error loading more logs:', error);
                   } finally {
                     setLoadingMore(false);
                   }

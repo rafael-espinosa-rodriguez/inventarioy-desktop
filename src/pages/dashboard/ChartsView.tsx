@@ -7,16 +7,24 @@ import { BarChart3, TrendingUp } from 'lucide-react';
 
 const COLORS = ['#d4af37', '#b8962f', '#a68527', '#947220', '#83601a', '#724e15'];
 
+// "YYYY-MM-DD" lo interpreta new Date() como medianoche UTC y toLocaleDateString lo
+// mostraría 1 día atrás en hora local; construimos una fecha local para que la etiqueta
+// del gráfico coincida con el día en que se registró la venta.
+function parseLocalDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split('T')[0].split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
 export default function ChartsView() {
   const { sales, products, recipes } = useDatabaseStore();
 
   // 1. Sales Over Time (Line Chart)
   const salesOverTime = useMemo(() => {
     const sorted = [...sales].sort((a, b) =>
-      new Date(a.date).getTime() - new Date(b.date).getTime()
+      parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime()
     );
     const grouped = sorted.reduce((acc, sale) => {
-      const date = new Date(sale.date).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' });
+      const date = parseLocalDate(sale.date).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' });
       acc[date] = (acc[date] || 0) + sale.total_amount;
       return acc;
     }, {} as Record<string, number>);

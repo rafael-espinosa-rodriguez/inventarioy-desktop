@@ -404,6 +404,212 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     WHERE id = 'owner' AND trial_started_at IS NULL AND license_key IS NULL;
     `,
   },
+  {
+    version: 6,
+    description: 'Restablecimiento de PIN: claves firmadas de un solo uso',
+    sql: `
+    CREATE TABLE IF NOT EXISTS pin_reset_used (
+      key_hash TEXT PRIMARY KEY,
+      used_at TEXT NOT NULL
+    );
+    `,
+  },
+  {
+    version: 7,
+    description: 'Tipo de persona (empleado/socio) y base de contribución en employees',
+    sql: `
+    ALTER TABLE employees ADD COLUMN person_type TEXT DEFAULT 'employee';
+    ALTER TABLE employees ADD COLUMN base_contribution REAL DEFAULT 0;
+    `,
+  },
+  {
+    version: 8,
+    description: 'Conceptos de nómina: horas extra, bonos, vacaciones pagadas, anticipos, préstamos y otras deducciones',
+    sql: `
+    ALTER TABLE payroll_entries ADD COLUMN overtime_hours REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN overtime_type TEXT DEFAULT 'diurna';
+    ALTER TABLE payroll_entries ADD COLUMN overtime_pay REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN bonus REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN vacation_pay REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN advances REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN loan_deduction REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN other_deductions REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN gross_salary REAL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS employee_loans (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      total_amount REAL DEFAULT 0,
+      monthly_payment REAL DEFAULT 0,
+      balance REAL DEFAULT 0,
+      start_date TEXT,
+      status TEXT DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_loans_user ON employee_loans (user_id);
+    `,
+  },
+  {
+    version: 9,
+    description: 'Tipo de contrato y liquidaciones laborales',
+    sql: `
+    ALTER TABLE employees ADD COLUMN contract_type TEXT DEFAULT 'indefinite';
+    ALTER TABLE employees ADD COLUMN contract_end_date TEXT;
+
+    CREATE TABLE IF NOT EXISTS payroll_liquidations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT NOT NULL,
+      base_salary REAL DEFAULT 0,
+      hire_date TEXT,
+      end_date TEXT,
+      months_worked REAL DEFAULT 0,
+      vacation_accumulated REAL DEFAULT 0,
+      vacation_taken REAL DEFAULT 0,
+      vacation_pending REAL DEFAULT 0,
+      vacation_pay REAL DEFAULT 0,
+      severance_months REAL DEFAULT 0,
+      severance_pay REAL DEFAULT 0,
+      notice_days REAL DEFAULT 0,
+      notice_pay REAL DEFAULT 0,
+      gross_total REAL DEFAULT 0,
+      cess REAL DEFAULT 0,
+      iip REAL DEFAULT 0,
+      net_total REAL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_liquidation_user ON payroll_liquidations (user_id);
+    `,
+  },
+  {
+    version: 10,
+    description: 'Roles personalizados reutilizables',
+    sql: `
+    CREATE TABLE IF NOT EXISTS roles (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      modules TEXT NOT NULL DEFAULT '[]',
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_roles_user ON roles (user_id);
+
+    -- Rol Dueño/a por defecto para cada negocio existente.
+    INSERT OR IGNORE INTO roles (id, user_id, name, modules, is_active, created_at, updated_at)
+    SELECT 'owner', u.id, 'Dueño/a',
+      '["sales","inventory","movements","transit","recipes","consumption","closings","charts","analysis","filtered","hr","settings"]',
+      1, datetime('now'), datetime('now')
+    FROM user_session u;
+
+    -- Roles legados: solo si están realmente en uso por access_pins existentes
+    -- (preserva la configuración actual; ningún rol nuevo por defecto).
+    INSERT OR IGNORE INTO roles (id, user_id, name, modules, is_active, created_at, updated_at)
+    SELECT DISTINCT p.role, p.user_id,
+      CASE p.role
+        WHEN 'economist' THEN 'Económico/a'
+        WHEN 'admin' THEN 'Administrador/a'
+        WHEN 'supervisor' THEN 'Supervisor/a'
+        WHEN 'clerk' THEN 'Dependiente/a'
+        ELSE p.role
+      END,
+      CASE p.role
+        WHEN 'economist' THEN '["sales","inventory","movements","transit","recipes","consumption","closings","charts","analysis","filtered","hr"]'
+        WHEN 'admin' THEN '["inventory","movements","transit"]'
+        WHEN 'supervisor' THEN '["sales","closings"]'
+        WHEN 'clerk' THEN '["sales"]'
+        ELSE '[]'
+      END,
+      1, datetime('now'), datetime('now')
+    FROM access_pins p
+    WHERE p.role <> 'owner'
+      AND NOT EXISTS (SELECT 1 FROM roles r WHERE r.id = p.role AND r.user_id = p.user_id);
+    `,
+  },
+  {
+    version: 11,
+    description: 'RRHH: expediente secuencial, vacaciones acumuladas, deducciones con tipo/motivo, fondo de tiempo, captación pre-nómina y estados de nómina',
+    sql: `
+    -- Número de Expediente/Contrato: secuencial por negocio, ineditable.
+    -- Backfill: numeración 1..N por fecha de creación dentro de cada negocio.
+    ALTER TABLE employees ADD COLUMN expediente INTEGER;
+    UPDATE employees SET expediente = (
+      SELECT COUNT(*) FROM employees e2
+      WHERE e2.user_id = employees.user_id
+        AND (e2.created_at < employees.created_at
+             OR (e2.created_at = employees.created_at AND e2.id <= employees.id))
+    ) WHERE expediente IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_expediente ON employees (user_id, expediente);
+
+    -- Vacaciones acumuladas (saldo de días estilo Versat)
+    ALTER TABLE employees ADD COLUMN vacation_balance REAL DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS employee_vacation_movements (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      employee_id TEXT NOT NULL,
+      month INTEGER,
+      year INTEGER,
+      type TEXT NOT NULL,
+      days REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_vacmov_employee ON employee_vacation_movements (employee_id);
+
+    -- Deducciones/Retenciones: tipo y criterio/motivo
+    ALTER TABLE employee_loans ADD COLUMN deduction_type TEXT DEFAULT 'prestamo';
+    ALTER TABLE employee_loans ADD COLUMN reason TEXT;
+
+    -- Fondo de tiempo estimado (horas/mes) y acumulación de vacaciones (días/mes)
+    ALTER TABLE payroll_config ADD COLUMN monthly_hours REAL DEFAULT 190.6;
+    ALTER TABLE payroll_config ADD COLUMN vacation_accrual_days REAL DEFAULT 2.5;
+
+    -- Conceptos de pago por horas reales (captación pre-nómina)
+    ALTER TABLE payroll_entries ADD COLUMN worked_hours REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN hourly_rate REAL DEFAULT 0;
+    ALTER TABLE payroll_entries ADD COLUMN days_paid REAL DEFAULT 0;
+
+    -- Estado de la nómina por período: draft (editable) | applied (bloqueada)
+    CREATE TABLE IF NOT EXISTS payroll_periods (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      applied_at TEXT,
+      applied_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (user_id, month, year)
+    );
+    CREATE INDEX IF NOT EXISTS idx_periods_user ON payroll_periods (user_id);
+
+    -- Captación pre-nómina: selección de trabajadores e incidencias antes de generar
+    CREATE TABLE IF NOT EXISTS payroll_drafts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      month INTEGER NOT NULL,
+      year INTEGER NOT NULL,
+      employee_id TEXT NOT NULL,
+      include INTEGER DEFAULT 1,
+      worked_hours REAL DEFAULT 0,
+      hourly_rate REAL DEFAULT 0,
+      bonus REAL DEFAULT 0,
+      advances REAL DEFAULT 0,
+      retention REAL DEFAULT 0,
+      vacation_days INTEGER DEFAULT 0,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (user_id, month, year, employee_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_drafts_user ON payroll_drafts (user_id);
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {

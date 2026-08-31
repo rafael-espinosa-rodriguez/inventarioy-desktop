@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { DollarSign, Calendar, Search, X, Eye, ArrowUpDown, ArrowDown, ArrowUp, Printer, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useDatabaseStore } from '../../store/dbStore';
+import { useDatabaseStore, getRoleModules } from '../../store/dbStore';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { toast } from 'sonner';
@@ -228,7 +228,8 @@ export default function DailyClosingsView() {
     return grouped;
   };
 
-  const canPrint = !accessPins || accessPins.length === 0 || (verifiedRole && ['owner', 'economist', 'supervisor', 'clerk'].includes(verifiedRole));
+  // Cualquier rol con acceso al módulo Cierres puede previsualizar/imprimir
+  const canPrint = !accessPins || accessPins.length === 0 || (!!verifiedRole && getRoleModules(verifiedRole).includes('closings'));
 
   return (
     <div className="space-y-6">

@@ -39,8 +39,8 @@ export const UNIT_LABELS: Record<UnitAbbrev, string> = {
 };
 
 export const UNITS_BY_TYPE: Record<UnitType, UnitAbbrev[]> = {
-  weight: ['g', 'kg', 'lb', 'oz', 'u', 'sac', 'lat'],
-  volume: ['ml', 'L', 'gal', 'fl oz', 'u', 'sac', 'lat'],
+  weight: ['g', 'kg', 'lb', 'oz'],
+  volume: ['ml', 'L', 'gal', 'fl oz'],
 };
 
 const UNIT_ALIASES: Record<string, UnitAbbrev> = {

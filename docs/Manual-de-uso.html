@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Manual-de-uso</title>
+<style>
+@page { size: A4; margin: 16mm 14mm; }
+body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a1a; font-size: 11pt; line-height: 1.5; max-width: 720px; margin: 0 auto; }
+h1 { color: #111111; border-bottom: 3px solid #FFC107; padding-bottom: 6px; }
+h2 { color: #1a1a1a; margin-top: 22px; border-bottom: 1px solid #e4e4e7; padding-bottom: 4px; }
+h3 { color: #71717a; margin-top: 16px; }
+code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-family: Consolas, monospace; font-size: 10pt; color: #111111; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+th, td { border: 1px solid #e4e4e7; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background: #FFC107; color: #1a1a1a; }
+blockquote { border-left: 4px solid #FFC107; margin: 12px 0; padding: 4px 14px; background: #f5f5f5; color: #71717a; }
+ul, ol { padding-left: 22px; }
+li { margin: 3px 0; }
+hr { border: none; border-top: 1px solid #e4e4e7; margin: 18px 0; }
+strong { color: #111111; }
+</style>
+</head>
+<body>
+<h1>InventarioY — Manual de uso</h1>
+<p>Versión 1.0 · Windows 10/11 (64 bits) · Aplicación 100% local (sin internet)</p>
+<hr />
+<h2>1. Requisitos del sistema</h2>
+<ul><li>Computadora con <strong>Windows 10 u 11</strong> (64 bits).</li><li>No se necesita internet para trabajar: todos sus datos se guardan en la propia computadora.</li><li>No requiere instalación de ninguna otra aplicación (Base de datos, servidor, etc.).</li></ul>
+<h2>2. Instalación</h2>
+<ol><li>Copie el archivo <strong><code>InventarioY Setup 1.0.0.exe</code></strong> a su computadora (por ejemplo, en el Escritorio).</li><li>Haga doble clic en el archivo para instalar.</li><li>Si Windows muestra el aviso <strong>"Windows protegió su equipo"</strong> (porque el programa no tiene certificado digital), haga clic en <strong>"Más información"</strong> y luego en <strong>"Ejecutar de todos modos"</strong>. Es normal en programas pequeños.</li><li>Elija la carpeta de instalación (puede dejar la que sugiere el instalador) y pulse <strong>Instalar</strong>.</li><li>Al terminar, abra <strong>InventarioY</strong> desde el acceso directo del Escritorio o del Menú Inicio.</li></ol>
+<h2>3. Primer uso (configuración inicial)</h2>
+<p>La primera vez que abre la aplicación debe crear su negocio:</p>
+<ol><li>Escriba el <strong>nombre del negocio</strong>.</li><li>Cree un <strong>PIN de 4 dígitos</strong> (es la contraseña para entrar; guárdelo bien).</li><li>Opcionalmente complete teléfono, dirección y horario de atención.</li><li>Pulse el botón para terminar la configuración.</li></ol>
+<p>Al terminar, la aplicación genera automáticamente su <strong>Código de Negocio</strong> (ej.: <code>ABC123</code>). Lo verá en <strong>Ajustes → Licencia</strong>. Ese código es importante para activar su licencia.</p>
+<h2>4. Entrar a la aplicación</h2>
+<ul><li>Abra InventarioY e introduzca su <strong>PIN de 4 dígitos</strong>.</li><li>Según el rol asignado (Dueño/a, Administrador, Dependiente, etc.) verá las secciones correspondientes: Panel, Productos, Ventas, Inventario, Análisis, Menú digital, entre otras.</li></ul>
+<h2>5. Licencia y activación</h2>
+<p>La aplicación funciona en modo de <strong>prueba gratis por 7 días</strong>. Pasado ese tiempo necesita una <strong>clave de activación</strong>.</p>
+<p><strong>Para activar:</strong></p>
+<ol><li>Vaya a <strong>Ajustes → Licencia</strong>.</li><li>Confirme su <strong>Código de Negocio</strong> (aparece en esa misma pantalla).</li><li>Pulse <strong>"Activar licencia"</strong> e introduzca la <strong>clave</strong> que le entregó el vendedor.</li><li>Pulse <strong>Activar</strong>. Verá el estado <strong>"Activa"</strong> (y <strong>"Licencia vitalicia"</strong> si su contrato es de por vida).</li></ol>
+<p><strong>Estados posibles de la licencia:</strong></p>
+<ul><li><strong>Prueba Gratis:</strong> los primeros 7 días.</li><li><strong>Activa:</strong> licencia vigente (suscripción mensual o vitalicia).</li><li><strong>Vencida:</strong> la aplicación deja de permitir ventas y movimientos hasta que se renueve (los datos no se pierden).</li></ul>
+<p>La licencia está ligada a su <strong>Código de Negocio</strong>, no a la computadora. Eso permite cambiarse de equipo sin perder la licencia (ver punto 7).</p>
+<h2>6. Respaldo de sus datos (IMPORTANTE)</h2>
+<p>Sus datos (productos, ventas, inventario) se guardan <strong>solo en su computadora</strong>. No existe copia en internet, por lo que <strong>la responsabilidad de respaldarlos es del cliente</strong>.</p>
+<p><strong>Cómo respaldar:</strong></p>
+<ol><li>Cierre InventarioY.</li><li>Copie la carpeta completa <strong><code>%APPDATA%\inventarioy</code></strong> (en Windows, pegue esa ruta en la barra del Explorador de archivos) a una memoria USB o a un espacio personal en la nube (Google Drive, etc.).</li><li>Haga este respaldo con frecuencia (sugerido: al menos una vez por semana, o diario si vende mucho).</li></ol>
+<p>La carpeta contiene la base de datos <strong><code>inventarioy.db</code></strong> con toda la información del negocio.</p>
+<h2>7. Cambiar de computadora</h2>
+<ol><li>Instale InventarioY en la nueva computadora.</li><li>Complete la configuración inicial (puede usar el mismo nombre de negocio).</li><li>En <strong>Ajustes → Código de Acceso</strong>, escriba el <strong>mismo Código de Negocio</strong> que tenía (el de su licencia).</li><li>Active con la <strong>misma clave</strong> de activación.</li><li>(Opcional) Restaure su respaldo: copie la carpeta <code>%APPDATA%\inventarioy</code> desde la USB/nube a la nueva máquina.</li></ol>
+<h2>8. Preguntas frecuentes</h2>
+<ul><li><strong>Al abrir el menú digital, Windows pide permitir acceso a la red.</strong> Acepte y marque "Red privada": es necesario para que los teléfonos del local se conecten al menú por el WiFi.</li><li><strong>El menú digital se ve vacío.</strong> Asegúrese de marcar los productos que desea mostrar en el menú (opción "Mostrar en menú" / individual) y de crear los precios correspondientes.</li><li><strong>Olvidé mi PIN.</strong> Comuníquese con el vendedor para restablecerlo.</li><li><strong>Perdí mi clave de activación.</strong> Comuníquese con el vendedor; puede generarle otra con la misma validez.</li><li><strong>Cambié la fecha/hora del sistema.</strong> No lo haga: la aplicación detecta retrocesos de reloj y puede bloquearse temporalmente por seguridad.</li><li><strong>¿Necesito internet para trabajar?</strong> No. Todo funciona local. Solo necesita el WiFi del local para que los clientes abran el menú digital con el QR.</li></ul>
+<h2>9. Soporte y actualizaciones</h2>
+<ul><li><strong>Soporte:</strong> incluido según las condiciones de su contrato (ver hoja de entrega).</li><li><strong>Actualizaciones:</strong> la licencia <strong>vitalicia</strong> incluye actualizaciones de la aplicación. Las suscripciones mensuales incluyen actualizaciones mientras estén vigentes.</li><li>Para cualquier duda o trámite: <strong>+53 54523884</strong> (vendedor).</li></ul>
+<hr />
+<p>© InventarioY. Este manual es material de acompañamiento del software; los datos del cliente son de su entera responsabilidad.</p>
+</body>
+</html>

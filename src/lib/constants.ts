@@ -75,7 +75,7 @@ export const DETAIL_KEY_TRANSLATIONS: Record<string, string> = {
   note: 'Nota',
   category: 'Categoría',
   total: 'Total',
-  items_count: 'Ítems',
+  items_count: 'Items',
   sale_type: 'Tipo de venta',
   sale_name: 'Nombre de venta',
   employee: 'Empleado',

@@ -5,6 +5,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/Badge';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { toast } from 'sonner';
 import { cn, esVitalicia } from '../../lib/utils';
 
@@ -12,7 +13,7 @@ const MONTH_OPTIONS = [1, 3, 6, 12];
 const VITALICIA_DATE = '2900-12-31';
 
 export default function LicenseView() {
-  const { user, generateLicense, simulateLicense } = useAuthStore();
+  const { user, generateLicense, simulateLicense, generatePinResetKey } = useAuthStore();
 
   const [genCode, setGenCode] = useState(user?.businessCode || '');
   const [genMonths, setGenMonths] = useState(1);
@@ -22,6 +23,11 @@ export default function LicenseView() {
   const [generating, setGenerating] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [pinCode, setPinCode] = useState(user?.businessCode || '');
+  const [pinGeneratedKey, setPinGeneratedKey] = useState('');
+  const [pinGeneratedExpiresAt, setPinGeneratedExpiresAt] = useState('');
+  const [pinGenerating, setPinGenerating] = useState(false);
+  const [pinCopied, setPinCopied] = useState(false);
 
   if (!user?.license?.isDeveloper) {
     return (
@@ -44,7 +50,7 @@ export default function LicenseView() {
   const handleGenerate = async () => {
     const code = genCode.trim().toUpperCase();
     if (!code) {
-      toast.error('Ingresá el código de negocio');
+      toast.error('Ingrese el código de negocio');
       return;
     }
     setGenerating(true);
@@ -74,6 +80,39 @@ export default function LicenseView() {
     }
   };
 
+  const handleGeneratePinReset = async () => {
+    const code = pinCode.trim().toUpperCase();
+    if (!code) {
+      toast.error('Ingrese el código de negocio');
+      return;
+    }
+    setPinGenerating(true);
+    try {
+      const res = await generatePinResetKey(code);
+      if (!res.success) {
+        toast.error(res.error || 'No se pudo generar la clave');
+        return;
+      }
+      setPinGeneratedKey(res.formattedKey || res.key || '');
+      setPinGeneratedExpiresAt(res.expiresAt || '');
+      toast.success('Clave generada correctamente');
+    } finally {
+      setPinGenerating(false);
+    }
+  };
+
+  const handleCopyPinReset = async () => {
+    if (!pinGeneratedKey) return;
+    try {
+      await navigator.clipboard.writeText(pinGeneratedKey.replace(/\s/g, ''));
+      setPinCopied(true);
+      toast.success('Clave copiada al portapapeles');
+      setTimeout(() => setPinCopied(false), 2000);
+    } catch {
+      toast.error('No se pudo copiar la clave');
+    }
+  };
+
   const runSimulate = async (action: string, opts?: { code?: string; months?: number; until?: string }) => {
     setSimulating(true);
     try {
@@ -92,9 +131,10 @@ export default function LicenseView() {
     }
   };
 
+  const [pendingSimulate, setPendingSimulate] = useState<{ action: string; label: string; opts?: { code?: string; months?: number; until?: string } } | null>(null);
+
   const confirmSimulate = (action: string, label: string, opts?: { code?: string; months?: number; until?: string }) => {
-    if (!window.confirm(`¿Simular "${label}"? Esta acción modifica el estado de licencia de esta instalación.`)) return;
-    runSimulate(action, opts);
+    setPendingSimulate({ action, label, opts });
   };
 
   const statusLabel =
@@ -112,7 +152,8 @@ export default function LicenseView() {
     : '—';
 
   return (
-    <div className="space-y-6 max-w-7xl">
+    <>
+      <div className="space-y-6 max-w-7xl">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-text">Gestión avanzada de licencia</h1>
@@ -276,6 +317,65 @@ export default function LicenseView() {
         )}
       </div>
 
+      {/* Restablecer PIN de un cliente */}
+      <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-text mb-1 flex items-center gap-2">
+          <KeyRound className="h-5 w-5 text-primary" />
+          Restablecer PIN de un cliente
+        </h2>
+        <p className="text-sm text-text-secondary mb-4">
+          Genera una clave que el cliente puede usar en &quot;¿Olvidaste tu PIN?&quot; de la
+          pantalla de inicio de sesión para recuperar el acceso a su negocio.
+        </p>
+        <div className="space-y-2 max-w-sm">
+          <Label htmlFor="pin-code">Código de negocio del cliente</Label>
+          <Input
+            id="pin-code"
+            value={pinCode}
+            onChange={(e) => setPinCode(e.target.value.toUpperCase())}
+            placeholder="Ej: ABC123"
+            className="font-mono uppercase"
+          />
+        </div>
+        <div className="mt-4">
+          <Button onClick={handleGeneratePinReset} disabled={pinGenerating}>
+            {pinGenerating ? (
+              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <KeyRound className="h-4 w-4 mr-2" />
+            )}
+            {pinGenerating ? 'Generando…' : 'Generar clave'}
+          </Button>
+        </div>
+
+        {pinGeneratedKey && (
+          <div className="mt-5 rounded-lg border border-primary/30 bg-primary/5 p-4">
+            <div className="mb-2">
+              <span className="text-sm font-medium text-text">Clave de recuperación</span>
+              {pinGeneratedExpiresAt && (
+                <p className="mt-0.5 text-xs text-danger">
+                  Vence el{' '}
+                  {new Date(pinGeneratedExpiresAt).toLocaleString('es-ES', {
+                    dateStyle: 'medium',
+                    timeStyle: 'short',
+                  })}{' '}
+                  · un solo uso
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 break-all rounded-lg border border-border bg-bg/60 px-3 py-2 text-sm text-text font-mono">
+                {pinGeneratedKey}
+              </code>
+              <Button variant="secondary" size="sm" onClick={handleCopyPinReset}>
+                {pinCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {pinCopied ? 'Copiada' : 'Copiar'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Simular estados */}
       <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-text mb-1 flex items-center gap-2">
@@ -283,8 +383,7 @@ export default function LicenseView() {
           Simular estados de licencia
         </h2>
         <p className="text-sm text-text-secondary mb-4">
-          Replica <code className="font-mono text-xs">scripts/simular-licencia.mjs</code>. Cada acción
-          refresca el estado mostrado en toda la app.
+          Herramienta de desarrollo del vendedor. Cada acción refresca el estado mostrado en toda la app.
         </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <Button variant="secondary" disabled={simulating} onClick={() => runSimulate('trial')}>
@@ -329,5 +428,19 @@ export default function LicenseView() {
         </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      isOpen={!!pendingSimulate}
+      onClose={() => setPendingSimulate(null)}
+      title="Simular estado de licencia"
+      description={pendingSimulate ? `¿Simular "${pendingSimulate.label}"? Esta acción modifica el estado de licencia de esta instalación.` : undefined}
+      confirmLabel="Simular"
+      onConfirm={() => {
+        const target = pendingSimulate;
+        setPendingSimulate(null);
+        if (target) runSimulate(target.action, target.opts);
+}}
+      />
+    </>
   );
 }

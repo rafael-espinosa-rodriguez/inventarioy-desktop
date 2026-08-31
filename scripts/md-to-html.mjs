@@ -1,6 +1,8 @@
 // Convierte un .md a HTML autocontenido para imprimir a PDF.
-// Uso: node scripts/md-to-html.mjs <entrada.md> <salida.html>
+// Uso: node scripts/md-to-html.mjs <entrada.md> <salida.html> [--pdf]
+// Con --pdf genera además el PDF (Chrome/Edge instalado en el sistema).
 import fs from 'node:fs';
+import path from 'node:path';
 
 function escapeHtml(s) {
   return s
@@ -109,25 +111,60 @@ function convert(md) {
 
 const CSS = `
 @page { size: A4; margin: 16mm 14mm; }
-body { font-family: 'Segoe UI', Arial, sans-serif; color: #1f2937; font-size: 11pt; line-height: 1.5; max-width: 720px; margin: 0 auto; }
-h1 { color: #0f766e; border-bottom: 2px solid #0f766e; padding-bottom: 6px; }
-h2 { color: #0f766e; margin-top: 22px; border-bottom: 1px solid #d1d5db; padding-bottom: 4px; }
-h3 { color: #374151; margin-top: 16px; }
-code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; font-family: Consolas, monospace; font-size: 10pt; }
+body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a1a; font-size: 11pt; line-height: 1.5; max-width: 720px; margin: 0 auto; }
+h1 { color: #111111; border-bottom: 3px solid #FFC107; padding-bottom: 6px; }
+h2 { color: #1a1a1a; margin-top: 22px; border-bottom: 1px solid #e4e4e7; padding-bottom: 4px; }
+h3 { color: #71717a; margin-top: 16px; }
+code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-family: Consolas, monospace; font-size: 10pt; color: #111111; }
 table { border-collapse: collapse; width: 100%; margin: 10px 0; }
-th, td { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; vertical-align: top; }
-th { background: #f0fdfa; }
-blockquote { border-left: 4px solid #0f766e; margin: 12px 0; padding: 4px 14px; background: #f8fafc; color: #475569; }
+th, td { border: 1px solid #e4e4e7; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background: #FFC107; color: #1a1a1a; }
+blockquote { border-left: 4px solid #FFC107; margin: 12px 0; padding: 4px 14px; background: #f5f5f5; color: #71717a; }
 ul, ol { padding-left: 22px; }
 li { margin: 3px 0; }
-hr { border: none; border-top: 1px solid #e5e7eb; margin: 18px 0; }
-strong { color: #111827; }
+hr { border: none; border-top: 1px solid #e4e4e7; margin: 18px 0; }
+strong { color: #111111; }
 `;
 
-const [input, output] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const wantPdf = args.includes('--pdf');
+const positional = args.filter((a) => a !== '--pdf');
+const [input, output] = positional;
 if (!input || !output) {
-  console.error('Uso: node scripts/md-to-html.mjs <entrada.md> <salida.html>');
+  console.error('Uso: node scripts/md-to-html.mjs <entrada.md> <salida.html> [--pdf]');
   process.exit(1);
+}
+
+// ---------- Generación de PDF (Chrome/Edge del sistema, sin descargar navegadores) ----------
+async function launchChromium() {
+  const { chromium } = await import('playwright');
+  const candidates = [
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  ];
+  for (const exe of candidates) {
+    if (fs.existsSync(exe)) {
+      try {
+        return await chromium.launch({ executablePath: exe, headless: true });
+      } catch (err) {
+        console.warn(`No se pudo lanzar ${exe}: ${err.message}`);
+      }
+    }
+  }
+  return chromium.launch({ channel: 'chrome', headless: true });
+}
+
+async function htmlToPdf(htmlPath, pdfPath) {
+  const browser = await launchChromium();
+  try {
+    const page = await browser.newPage();
+    await page.goto('file:///' + path.resolve(htmlPath).replace(/\\/g, '/'));
+    await page.pdf({ path: pdfPath, format: 'A4', printBackground: true, preferCSSPageSize: true });
+  } finally {
+    await browser.close();
+  }
 }
 
 const md = fs.readFileSync(input, 'utf8');
@@ -146,3 +183,14 @@ ${body}
 `;
 fs.writeFileSync(output, html, 'utf8');
 console.log(`OK: ${output}`);
+
+if (wantPdf) {
+  const pdfPath = output.replace(/\.html$/i, '.pdf');
+  try {
+    await htmlToPdf(output, pdfPath);
+    console.log(`OK: ${pdfPath}`);
+  } catch (err) {
+    console.error(`No se pudo generar el PDF: ${err.message}`);
+    process.exit(1);
+  }
+}
