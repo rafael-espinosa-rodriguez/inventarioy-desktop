@@ -8,6 +8,7 @@ import { exportToExcel } from '../../lib/utils';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
 import { useCountUp } from '../../lib/animations/useCountUp';
 import { usePersistentFilters } from '../../lib/hooks/usePersistentFilters';
+import { localDb } from '../../lib/db/localClient';
 
 export default function DailyClosingsView() {
   const { dailyClosings, sales, employees, logAction, products, accessPins } = useDatabaseStore();
@@ -17,15 +18,19 @@ export default function DailyClosingsView() {
     endDate: string;
     sortOrder: 'desc' | 'asc';
     employeeFilter: string;
+    registerFilter: string;
+    shiftFilter: string;
     currentPage: number;
     itemsPerPage: number;
-  }>('dailyClosings', { searchTerm: '', startDate: '', endDate: '', sortOrder: 'desc', employeeFilter: '', currentPage: 1, itemsPerPage: 10 });
-  const { searchTerm, startDate, endDate, sortOrder, employeeFilter, currentPage, itemsPerPage } = filters;
+  }>('dailyClosings', { searchTerm: '', startDate: '', endDate: '', sortOrder: 'desc', employeeFilter: '', registerFilter: '', shiftFilter: '', currentPage: 1, itemsPerPage: 10 });
+  const { searchTerm, startDate, endDate, sortOrder, employeeFilter, registerFilter, shiftFilter, currentPage, itemsPerPage } = filters;
   const setSearchTerm = (v: string) => setFilters({ searchTerm: v });
   const setStartDate = (v: string) => setFilters({ startDate: v });
   const setEndDate = (v: string) => setFilters({ endDate: v });
   const setSortOrder = (v: 'desc' | 'asc') => setFilters({ sortOrder: v });
   const setEmployeeFilter = (v: string) => setFilters({ employeeFilter: v });
+  const setRegisterFilter = (v: string) => setFilters({ registerFilter: v });
+  const setShiftFilter = (v: string) => setFilters({ shiftFilter: v });
   const setCurrentPage = (v: number | ((p: number) => number)) => setFilters(prev => ({ ...prev, currentPage: typeof v === 'function' ? v(prev.currentPage) : v }));
   const setItemsPerPage = (v: number) => setFilters({ itemsPerPage: v });
   const [selectedClosing, setSelectedClosing] = useState<any>(null);
@@ -38,6 +43,39 @@ export default function DailyClosingsView() {
     usd: 0,
     eur: 0,
   });
+  const [cajas, setCajas] = useState<any[]>([]);
+  const [doubleShiftEnabled, setDoubleShiftEnabled] = useState(false);
+
+  // Multi-caja: cargar las cajas para el filtro y la etiqueta de cada cierre.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await localDb.from('cajas').select('*').order('created_at', { ascending: true });
+        if (active) setCajas(Array.isArray(res.data) ? res.data : []);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // Doble turno (opcional): cargar configuración para mostrar etiquetas y filtro.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await localDb.settings.get('');
+        const all = res?.data || {};
+        if (active) setDoubleShiftEnabled(!!all.double_shift_enabled);
+      } catch { /* defaults */ }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  const registerName = (id?: string | null): string => {
+    if (!id) return '';
+    const found = cajas.find((c) => c.id === id);
+    return found?.name || '';
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem('verifiedRole');
@@ -80,6 +118,14 @@ export default function DailyClosingsView() {
       );
     }
 
+    if (registerFilter) {
+      result = result.filter(c => c.register_id === registerFilter);
+    }
+
+    if (shiftFilter) {
+      result = result.filter(c => (c.shift || '1') === shiftFilter);
+    }
+
     result = [...result].sort((a, b) => {
       const dateA = new Date(a.closing_date).getTime();
       const dateB = new Date(b.closing_date).getTime();
@@ -87,31 +133,39 @@ export default function DailyClosingsView() {
     });
 
     return result;
-  }, [dailyClosings, searchTerm, startDate, endDate, sortOrder, employeeFilter]);
+  }, [dailyClosings, searchTerm, startDate, endDate, sortOrder, employeeFilter, registerFilter, shiftFilter]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, startDate, endDate, employeeFilter, sortOrder]);
+  }, [searchTerm, startDate, endDate, employeeFilter, registerFilter, shiftFilter, sortOrder]);
 
-  const getSalesForDate = (closingDate: string) => {
+  const closingKey = (c: any) => `${c.closing_date.split('T')[0]}|${c.shift || '1'}`;
+
+  const getSalesForDate = (closingDate: string, shift?: string) => {
     const dateStr = closingDate.split('T')[0];
     return sales.filter(s => {
       const saleDate = new Date(s.date).toISOString().split('T')[0];
-      return saleDate === dateStr;
+      if (saleDate !== dateStr) return false;
+      if (shift !== undefined && (s.shift || '1') !== shift) return false;
+      return true;
     });
   };
 
-  const getSalesForDateWithType = (closingDate: string, type: string) => {
+  const getSalesForDateWithType = (closingDate: string, type: string, shift?: string) => {
     return sales.filter(s => {
       const saleDate = new Date(s.date).toISOString().split('T')[0];
-      return saleDate === closingDate && s.sale_type === type;
+      if (saleDate !== closingDate || s.sale_type !== type) return false;
+      if (shift !== undefined && (s.shift || '1') !== shift) return false;
+      return true;
     });
   };
 
-  const getAccountHouseSales = (closingDate: string) => {
+  const getAccountHouseSales = (closingDate: string, shift?: string) => {
     return sales.filter(s => {
       const saleDate = new Date(s.date).toISOString().split('T')[0];
-      return saleDate === closingDate && s.is_account_house === true;
+      if (saleDate !== closingDate || s.is_account_house !== true) return false;
+      if (shift !== undefined && (s.shift || '1') !== shift) return false;
+      return true;
     });
   };
 
@@ -119,10 +173,11 @@ export default function DailyClosingsView() {
     const map = new Map<string, { salon: number; domicilio: number; bar: number; venta_rapida: number; cuenta_casa: number; total: number }>();
     sales.forEach(s => {
       const dateKey = new Date(s.date).toISOString().split('T')[0];
-      let entry = map.get(dateKey);
+      const key = `${dateKey}|${(s as any).shift || '1'}`;
+      let entry = map.get(key);
       if (!entry) {
         entry = { salon: 0, domicilio: 0, bar: 0, venta_rapida: 0, cuenta_casa: 0, total: 0 };
-        map.set(dateKey, entry);
+        map.set(key, entry);
       }
       const amount = Number(s.total_amount || 0);
       if (s.is_account_house) {
@@ -144,23 +199,23 @@ export default function DailyClosingsView() {
   const totalDescuentosHistorico = filteredClosings.reduce((sum, c) => sum + Number(c.total_discounts || 0), 0);
 
   const totalSalonHistorico = filteredClosings.reduce((sum, c) => {
-    return sum + (closingTotalsByDate.get(c.closing_date.split('T')[0])?.salon || 0);
+    return sum + (closingTotalsByDate.get(closingKey(c))?.salon || 0);
   }, 0);
   
   const totalDomicilioHistorico = filteredClosings.reduce((sum, c) => {
-    return sum + (closingTotalsByDate.get(c.closing_date.split('T')[0])?.domicilio || 0);
+    return sum + (closingTotalsByDate.get(closingKey(c))?.domicilio || 0);
   }, 0);
 
   const totalCuentaCasaHistorico = filteredClosings.reduce((sum, c) => {
-    return sum + (closingTotalsByDate.get(c.closing_date.split('T')[0])?.cuenta_casa || 0);
+    return sum + (closingTotalsByDate.get(closingKey(c))?.cuenta_casa || 0);
   }, 0);
 
   const totalBarHistorico = filteredClosings.reduce((sum, c) => {
-    return sum + (closingTotalsByDate.get(c.closing_date.split('T')[0])?.bar || 0);
+    return sum + (closingTotalsByDate.get(closingKey(c))?.bar || 0);
   }, 0);
 
   const totalVentaRapidaHistorico = filteredClosings.reduce((sum, c) => {
-    return sum + (closingTotalsByDate.get(c.closing_date.split('T')[0])?.venta_rapida || 0);
+    return sum + (closingTotalsByDate.get(closingKey(c))?.venta_rapida || 0);
   }, 0);
 
   const statsRef = useStaggerEnter([totalVentasHistorico]);
@@ -176,11 +231,13 @@ export default function DailyClosingsView() {
     resetFilters();
   };
 
-  const getSalesItemsGrouped = (closingDate: string) => {
+  const getSalesItemsGrouped = (closingDate: string, shift?: string) => {
     const dateStr = closingDate.split('T')[0];
     const allSalesForDate = sales.filter(s => {
       const saleDate = new Date(s.date).toISOString().split('T')[0];
-      return saleDate === dateStr;
+      if (saleDate !== dateStr) return false;
+      if (shift !== undefined && (s.shift || '1') !== shift) return false;
+      return true;
     });
 
     const grouped = {
@@ -346,6 +403,31 @@ export default function DailyClosingsView() {
             ))}
           </select>
         </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={registerFilter}
+            onChange={e => setRegisterFilter(e.target.value)}
+            className="h-10 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary min-w-[140px] sm:min-w-[160px]"
+          >
+            <option value="">Todas las cajas</option>
+            {cajas.filter((c) => !!c.is_active).map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+        {doubleShiftEnabled && (
+          <div className="flex items-center gap-2">
+            <select
+              value={shiftFilter}
+              onChange={e => setShiftFilter(e.target.value)}
+              className="h-10 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary min-w-[130px]"
+            >
+              <option value="">Todos los turnos</option>
+              <option value="1">Turno 1</option>
+              <option value="2">Turno 2</option>
+            </select>
+          </div>
+        )}
         <div className="flex items-center gap-2 ml-auto">
           <Button
             variant="outline"
@@ -356,7 +438,7 @@ export default function DailyClosingsView() {
             <ArrowUpDown className="h-3 w-3" />
             {sortOrder === 'desc' ? 'Más recientes' : 'Más antiguos'}
           </Button>
-          {(searchTerm || startDate || endDate || employeeFilter) && (
+          {(searchTerm || startDate || endDate || employeeFilter || registerFilter || shiftFilter) && (
             <Button
               variant="ghost"
               size="sm"
@@ -409,12 +491,22 @@ export default function DailyClosingsView() {
                     <div className="flex items-center gap-2 mt-1">
                       <p className="text-xs text-text-secondary">
                         {closing.total_sales > 0 ? (
-                          `${closing.sales_count != null ? closing.sales_count : getSalesForDate(closing.closing_date).length} ventas`
+                          `${closing.sales_count != null ? closing.sales_count : getSalesForDate(closing.closing_date, closing.shift || '1').length} ventas`
                         ) : 'Sin ventas'}
                       </p>
                       {closing.created_by_name && (
                         <span className="text-xs text-primary">
                           • Cerró: {closing.created_by_name}
+                        </span>
+                      )}
+                      {registerName(closing.register_id) && (
+                        <span className="text-xs text-primary">
+                          • Caja: {registerName(closing.register_id)}
+                        </span>
+                      )}
+                      {doubleShiftEnabled && (
+                        <span className="text-xs text-primary">
+                          • Turno {closing.shift === '2' ? 2 : 1}
                         </span>
                       )}
                     </div>
@@ -459,7 +551,8 @@ export default function DailyClosingsView() {
                       const closingDate = closing.closing_date.split('T')[0];
                       const daySales = sales.filter(s => {
                         const saleDate = new Date(s.date).toISOString().split('T')[0];
-                        return saleDate === closingDate;
+                        if (saleDate !== closingDate) return false;
+                        return (s.shift || '1') === (closing.shift || '1');
                       });
                       
                       if (daySales.length === 0) {
@@ -562,7 +655,7 @@ export default function DailyClosingsView() {
             <div className="space-y-3 rounded-xl bg-bg/50 p-4">
               <div className="text-xs font-medium text-text-secondary mb-2">Desglose de Ventas:</div>
               {(() => {
-                const totals = closingTotalsByDate.get(selectedClosing.closing_date.split('T')[0]) || { salon: 0, domicilio: 0, cuenta_casa: 0, bar: 0, venta_rapida: 0 };
+                const totals = closingTotalsByDate.get(closingKey(selectedClosing)) || { salon: 0, domicilio: 0, cuenta_casa: 0, bar: 0, venta_rapida: 0 };
                 return <>
               <div className="flex justify-between text-sm">
                 <span className="text-text-secondary">Salón:</span>
@@ -614,7 +707,8 @@ export default function DailyClosingsView() {
                 const closingDateStr = selectedClosing.closing_date.split('T')[0];
                 const daySales = sales.filter(s => {
                   const saleDate = new Date(s.date).toISOString().split('T')[0];
-                  return saleDate === closingDateStr && !s.is_account_house;
+                  if (saleDate !== closingDateStr || s.is_account_house) return false;
+                  return (s.shift || '1') === (selectedClosing.shift || '1');
                 });
                 
                 let cupEfectivo = 0;
@@ -726,7 +820,7 @@ export default function DailyClosingsView() {
               </div>
 
               {(() => {
-                const grouped = getSalesItemsGrouped(selectedClosing.closing_date);
+                const grouped = getSalesItemsGrouped(selectedClosing.closing_date, selectedClosing.shift || '1');
                 const formatItem = (name: string, qty: number, subtotal: number) => {
                   const qtyStr = qty.toString().padStart(2, ' ');
                   const subStr = subtotal.toFixed(2).padStart(8, ' ');
@@ -828,7 +922,8 @@ export default function DailyClosingsView() {
                       const closingDateStr = selectedClosing.closing_date.split('T')[0];
                       const daySales = sales.filter(s => {
                         const saleDate = new Date(s.date).toISOString().split('T')[0];
-                        return saleDate === closingDateStr && !s.is_account_house;
+                        if (saleDate !== closingDateStr || s.is_account_house) return false;
+                        return (s.shift || '1') === (selectedClosing.shift || '1');
                       });
                       
                       let cupEfectivo = 0;

@@ -23,11 +23,13 @@ import {
   LockOpen,
   Crown,
   WifiOff,
-  KeyRound
+  KeyRound,
+  Store
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useDatabaseStore, MODULE_BY_PATH, getRoleModules, getRoleLabel } from '../store/dbStore';
 import { useIsOnline } from '../hooks/useIsOnline';
+import { localDb } from '../lib/db/localClient';
 import InventarioYLogo from '../components/InventarioYLogo';
 import LicenseBanner from '../components/LicenseBanner';
 import PinModal from '../components/PinModal';
@@ -79,6 +81,36 @@ export default function Dashboard() {
   const [pendingModule, setPendingModule] = useState('');
   const [moduleAllowed, setModuleAllowed] = useState<Record<string, boolean>>({});
   const [isPinAccess, setIsPinAccess] = useState(false);
+  const [cajas, setCajas] = useState<any[]>([]);
+  const [currentRegister, setCurrentRegister] = useState<any>(null);
+
+  // Multi-caja: cargar cajas activas y la caja asignada a este dispositivo.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const [cajasRes, sessRes] = await Promise.all([
+          localDb.from('cajas').select('*').order('created_at', { ascending: true }),
+          localDb.getMySession(),
+        ]);
+        if (!active) return;
+        const list = Array.isArray(cajasRes.data) ? cajasRes.data.filter((c: any) => !!c.is_active) : [];
+        setCajas(list);
+        setCurrentRegister(sessRes?.data?.session?.register || null);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [location.pathname]);
+
+  const handleSelectRegister = async (registerId: string) => {
+    const res = await localDb.setRegister(registerId);
+    if (res.error || !res.data?.success) {
+      toast.error(res.error?.message || 'No se pudo cambiar la caja');
+      return;
+    }
+    setCurrentRegister(res.data?.register || null);
+    toast.success(res.data?.register ? `Caja activa: ${res.data.register.name}` : 'Sin caja asignada');
+  };
 
   const baseNav = useMemo(() => [
     // INVENTARIO
@@ -258,6 +290,24 @@ export default function Dashboard() {
     return () => window.removeEventListener('online', handleOnline);
   }, [fetchAll]);
 
+  // Multi-caja: polling cada 5 s + refresco al volver a la pestaña, solo cuando la
+  // pestaña está visible. Exclusivo de producción: la suite e2e (Vite dev) necesita
+  // silencio de datos entre pasos.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchAll().catch(() => {});
+      }
+    };
+    const interval = setInterval(refreshIfVisible, 5000);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [fetchAll]);
+
   const checkUncontactedUsers = useCallback(async () => {
     // Desktop local: no hay usuarios remotos que contactar
     return;
@@ -419,6 +469,29 @@ export default function Dashboard() {
                   >
                     ✕
                   </button>
+                </div>
+              </div>
+            )}
+            {(cajas.length > 0 || currentRegister) && (
+              <div className="mb-3 px-3">
+                <div className="flex items-center justify-between rounded-lg bg-surface-hover/60 border border-border/60 px-3 py-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Store className="h-4 w-4 text-primary shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs text-text-secondary">Caja activa</p>
+                      <select
+                        value={currentRegister?.id || ''}
+                        onChange={(e) => handleSelectRegister(e.target.value)}
+                        className="w-full max-w-[150px] bg-bg text-sm font-medium text-text outline-none rounded px-1 py-0.5 border border-border/60"
+                        title="Seleccione el punto de venta de este dispositivo"
+                      >
+                        <option value="">Sin caja</option>
+                        {cajas.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

@@ -145,6 +145,61 @@ function clearActiveRole(): void {
   runRaw('DELETE FROM settings WHERE key = ?', [ACTIVE_ROLE_KEY]);
 }
 
+// ---------- Sesión por dispositivo (multi-caja en LAN) ----------
+// Cada login crea una fila en `sessions` con un token propio. El rol de escritura
+// se resuelve desde ese token (x-inventarioy-session), no de una fila global, de
+// modo que dos cajas con roles distintos operan en simultáneo sin pisarse.
+const SESSION_HEADER = 'x-inventarioy-session';
+
+interface SessionRow {
+  id: string;
+  user_id: string;
+  token: string;
+  role: string;
+  pin_name?: string | null;
+  register_id?: string | null;
+  created_at: string;
+  last_seen_at: string;
+}
+
+function getSessionByToken(token: string | undefined | null): SessionRow | undefined {
+  if (!token || String(token).trim().length < 16) return undefined;
+  return getRaw<SessionRow>(
+    'SELECT * FROM sessions WHERE token = ?',
+    [String(token).trim()]
+  );
+}
+
+function createSession(role: string, pinName?: string | null, registerId?: string | null): SessionRow {
+  const now = new Date().toISOString();
+  const row: SessionRow = {
+    id: crypto.randomUUID(),
+    user_id: 'owner',
+    token: randomBytes(32).toString('hex'),
+    role,
+    pin_name: pinName || null,
+    register_id: registerId || null,
+    created_at: now,
+    last_seen_at: now,
+  };
+  runRaw(
+    `INSERT INTO sessions (id, user_id, token, role, pin_name, register_id, created_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [row.id, row.user_id, row.token, row.role, row.pin_name, row.register_id, row.created_at, row.last_seen_at]
+  );
+  return row;
+}
+
+function touchSession(session: SessionRow): void {
+  runRaw('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [new Date().toISOString(), session.id]);
+}
+
+function requestSession(request: any): SessionRow | undefined {
+  const session = getSessionByToken(String(request.headers?.[SESSION_HEADER] || ''));
+  if (session) touchSession(session);
+  return session;
+}
+
 // ---------- Validación de Origin (anti-CSRF / DNS rebinding) ----------
 // Hosts de loopback + IPs LAN propias del servidor (para tablets/celulares por WiFi).
 const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
@@ -352,17 +407,26 @@ const TABLE_MODULES: Record<string, TableModuleRule> = {
   settings: 'settings',
   user_session: 'settings',
   profiles: 'settings',
+  // Puntos de venta / cajas: solo el dueño los gestiona
+  cajas: 'settings',
 };
 
-// El rol de escritura se obtiene del rol verificado en el servidor (active_session_role),
-// establecido tras un login/verify exitoso. NO se confía en el header x-inventarioy-role.
-// Fallback: si aún no hay rol verificado (p. ej. actualización en caliente con sesión
-// persistida), se usa el rol del owner — alcanzable solo con token válido (requireToken).
+// El rol de escritura se obtiene de la sesión del dispositivo (x-inventarioy-session),
+// creada en el login/verify exitoso. Cada caja tiene su propio rol, por lo que dos
+// cajas con PINs distintos pueden operar en simultáneo. NO se confía en el header
+// x-inventarioy-role. Fallback: si aún no hay sesión de dispositivo (p. ej. cliente
+// remoto en primera visita sin login), se usa el rol activo global (legacy) o el owner
+// — alcanzable solo con token de instalación válido (requireToken).
 function getRequestRole(request: any): string | null {
+  const session = requestSession(request);
+  if (session) {
+    const role = roleExists(session.role) ? session.role : null;
+    if (role) return role;
+  }
   const active = getActiveRole();
   if (active) return active;
-  const session = getRaw<any>('SELECT role FROM user_session WHERE id = ?', ['owner']);
-  const fallback = session?.role || 'owner';
+  const sessionRow = getRaw<any>('SELECT role FROM user_session WHERE id = ?', ['owner']);
+  const fallback = sessionRow?.role || 'owner';
   return roleExists(fallback) ? fallback : null;
 }
 
@@ -479,6 +543,35 @@ function isProtectedSettingsWrite(table: string, data: any, filters?: Filter[]):
   return keys.some((k) => PROTECTED_SETTINGS_KEYS.has(k));
 }
 
+
+// ---------- Doble turno (opcional) ----------
+// Configuración en settings: `double_shift_enabled` (bool) y `shift_cutoff_hour`
+// (0-23). Cuando está desactivado, toda venta/cierre es Turno 1 (comportamiento
+// de un solo turno). Cuando está activo, la venta se etiqueta según su hora.
+const DOUBLE_SHIFT_KEY = 'double_shift_enabled';
+const SHIFT_CUTOFF_KEY = 'shift_cutoff_hour';
+
+function getSettingBool(key: string): boolean {
+  const row = getRaw<any>('SELECT value FROM settings WHERE key = ?', [key]);
+  if (!row?.value) return false;
+  try { return !!JSON.parse(row.value); } catch { return false; }
+}
+
+function getSettingNumber(key: string, def: number): number {
+  const row = getRaw<any>('SELECT value FROM settings WHERE key = ?', [key]);
+  if (!row?.value) return def;
+  try {
+    const v = JSON.parse(row.value);
+    return typeof v === 'number' && Number.isFinite(v) ? v : def;
+  } catch { return def; }
+}
+
+// Turno de una venta según la HORA ACTUAL (el POS vende "ahora"; sale.date solo
+// lleva el día, sin hora). `enabled=false` => siempre Turno 1.
+function computeCurrentShift(enabled: boolean, cutoff: number): string {
+  if (!enabled) return '1';
+  return new Date().getHours() < cutoff ? '1' : '2';
+}
 
 function extractJoins(columns: string): string[] {
   const joins: string[] = [];
@@ -617,6 +710,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     const q = request.body as QueryCommand;
     if (!q?.table) {
       return reply.code(400).send({ data: null, error: { message: 'Falta tabla' } });
+    }
+    // Tablas internas de sesión: nunca accesibles vía la query genérica
+    // (contienen tokens de sesión; la gestión es exclusiva del servidor).
+    if (q.table === 'sessions') {
+      return reply.code(403).send({ data: null, error: { message: 'Tabla interna no accesible', code: 'FORBIDDEN_TABLE' } });
     }
     try {
       if (q.method === 'select') {
@@ -834,7 +932,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         runRaw('UPDATE access_pins SET pin_hash = ? WHERE id = ?', [hashPinScrypt(pin), target.id]);
       }
       setActiveRole(target.role);
-      return { data: { success: true, role: target.role, role_name: getRoleName(target.role), modules, pin_name: target.pin_name }, error: null };
+      // En multi-caja, el PIN verificado eleva el rol de ESTA sesión/dispositivo.
+      // Si el dispositivo aún no tiene sesión (p. ej. tablet en primera visita), se
+      // crea una nueva y se devuelve su token para que el cliente lo persista.
+      let newSessionToken: string | undefined;
+      const sess = requestSession(request);
+      if (sess) {
+        runRaw('UPDATE sessions SET role = ?, pin_name = ? WHERE id = ?', [target.role, target.pin_name || null, sess.id]);
+      } else {
+        const created = createSession(target.role, target.pin_name || null);
+        newSessionToken = created.token;
+      }
+      return { data: { success: true, role: target.role, role_name: getRoleName(target.role), modules, pin_name: target.pin_name, sessionToken: newSessionToken }, error: null };
     }
     if (fn === 'save_access_pin') {
       // Crea o actualiza un PIN y (si se indica) un Rol reutilizable. El PIN se
@@ -924,6 +1033,207 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         },
         error: null,
       };
+    }
+    if (fn === 'get_my_session') {
+      // Devuelve la sesión del dispositivo (rol + caja) para la UI.
+      const sess = requestSession(request);
+      if (!sess) return { data: { session: null }, error: null };
+      const register = sess.register_id
+        ? getRaw<any>('SELECT id, name, is_active FROM cajas WHERE id = ?', [sess.register_id]) || null
+        : null;
+      return {
+        data: { session: { role: sess.role, pin_name: sess.pin_name || null, register } },
+        error: null,
+      };
+    }
+    if (fn === 'set_register') {
+      // Asocia la sesión del dispositivo a una caja/punto de venta (control del dueño).
+      const sess = requestSession(request);
+      if (!sess) return reply.code(401).send({ data: null, error: { message: 'Sesión no válida', code: 'UNAUTHORIZED' } });
+      const registerId = String(args?.register_id || '');
+      const register = registerId
+        ? getRaw<any>('SELECT * FROM cajas WHERE id = ? AND is_active = 1', [registerId]) || null
+        : null;
+      if (registerId && !register) {
+        return { data: { success: false, error: 'La caja seleccionada no existe o está inactiva' }, error: null };
+      }
+      runRaw('UPDATE sessions SET register_id = ? WHERE id = ?', [registerId || null, sess.id]);
+      return { data: { success: true, register: register || null }, error: null };
+    }
+    if (fn === 'sale') {
+      // Venta atómica (multi-caja): valida stock, inserta venta+ítems, descuenta
+      // del tránsito (FIFO) y registra movimientos, TODO en una única transacción.
+      // El rol se resuelve de la sesión del dispositivo; requiere módulo "sales".
+      const role = getRequestRole(request);
+      if (role === null) {
+        return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (!roleAllowed('sales', 'insert', role)) {
+        return reply.code(403).send({
+          data: null,
+          error: { message: 'Tu rol no tiene permiso para registrar ventas.', code: 'ROLE_FORBIDDEN' },
+        });
+      }
+      if (isWriteBlockedByLicense()) {
+        return reply.code(403).send({
+          data: null,
+          error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' },
+        });
+      }
+      const sale = (args?.sale || {}) as any;
+      if (!sale || typeof sale !== 'object' || !Array.isArray(sale.items)) {
+        return reply.code(400).send({ data: null, error: { message: 'Datos de venta inválidos' } });
+      }
+      const sess = requestSession(request);
+      const doubleShiftEnabled = getSettingBool(DOUBLE_SHIFT_KEY);
+      const shiftCutoff = getSettingNumber(SHIFT_CUTOFF_KEY, 15);
+      const saleShift = computeCurrentShift(doubleShiftEnabled, shiftCutoff);
+      try {
+        const result = transaction(() => {
+          const now = new Date().toISOString();
+          const saleDate = new Date(sale.date).toISOString().split('T')[0];
+          const closed = getRaw<any>('SELECT 1 FROM daily_closings WHERE user_id = ? AND closing_date = ? AND shift = ?', ['owner', saleDate, saleShift]);
+          if (closed) throw { code: 'DAY_CLOSED', message: 'El día está cerrado, no se pueden registrar ventas' };
+
+          const products = queryRaw<any>('SELECT * FROM products WHERE user_id = ?', ['owner']);
+          const productsMap = new Map(products.map((p: any) => [p.id, p]));
+          const transitRows = queryRaw<any>(
+            'SELECT * FROM transit_items WHERE user_id = ? AND remaining > 0 ORDER BY sent_date ASC',
+            ['owner']
+          );
+          const transitMap = new Map<string, number>();
+          for (const t of transitRows) {
+            transitMap.set(t.product_id, (transitMap.get(t.product_id) || 0) + t.remaining);
+          }
+
+          const itemsToConsume: { productId: string; qtyNeeded: number }[] = [];
+          for (const item of sale.items) {
+            if (!item.is_recipe) {
+              const avail = transitMap.get(item.product_id) || 0;
+              const product = productsMap.get(item.product_id);
+              const name = product?.name || 'producto';
+              if (avail < item.quantity) {
+                throw { code: 'INSUFFICIENT_STOCK', message: `No hay suficiente "${name}" en transito. Necesitas: ${item.quantity}, Disponible: ${avail}` };
+              }
+              itemsToConsume.push({ productId: item.product_id, qtyNeeded: item.quantity });
+            } else if (item.is_recipe && item.recipe_snapshot && Array.isArray(item.recipe_snapshot.ingredients)) {
+              for (const ing of item.recipe_snapshot.ingredients) {
+                const avail = transitMap.get(ing.product_id) || 0;
+                const needed = Number(ing.quantity) * Number(item.quantity);
+                const ingProduct = productsMap.get(ing.product_id);
+                const ingName = ingProduct?.name || 'ingrediente';
+                if (avail < needed) {
+                  throw { code: 'INSUFFICIENT_STOCK', message: `No hay suficiente "${ingName}" en transito para la receta "${item.recipe_snapshot.name}". Necesitas: ${needed}, Disponible: ${avail}` };
+                }
+                const existing = itemsToConsume.find((i) => i.productId === ing.product_id);
+                if (existing) existing.qtyNeeded += needed;
+                else itemsToConsume.push({ productId: ing.product_id, qtyNeeded: needed });
+              }
+            }
+          }
+
+          const saleId = crypto.randomUUID();
+          const registerId = sess?.register_id || null;
+          runRaw(
+            `INSERT INTO sales (id, user_id, employee_id, total_amount, date, sale_type, is_account_house, notes, discount, payment_method, efectivo, transferencia, usd, eur, register_id, shift, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              saleId, 'owner', sale.employee_id || null, sale.total_amount, sale.date, sale.sale_type || 'SALON',
+              sale.is_account_house ? 1 : 0, sale.notes || null, sale.discount || 0, sale.payment_method || null,
+              sale.efectivo || 0, sale.transferencia || 0, sale.usd || 0, sale.eur || 0, registerId, saleShift, now,
+            ]
+          );
+          const saleItems = (sale.items || []).map((item: any) => ({
+            id: crypto.randomUUID(),
+            sale_id: saleId,
+            product_id: item.product_id,
+            quantity: item.quantity,
+            unit_cost: item.unit_cost || 0,
+            selling_price: item.selling_price || 0,
+            subtotal: item.subtotal || 0,
+            is_recipe: item.is_recipe ? 1 : 0,
+            recipe_snapshot: item.recipe_snapshot ? JSON.stringify(item.recipe_snapshot) : null,
+            created_at: now,
+          }));
+          for (const si of saleItems) {
+            runRaw(
+              `INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_cost, selling_price, subtotal, is_recipe, recipe_snapshot, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [si.id, si.sale_id, si.product_id, si.quantity, si.unit_cost, si.selling_price, si.subtotal, si.is_recipe, si.recipe_snapshot, now]
+            );
+          }
+
+          for (const ci of itemsToConsume) {
+            const product = productsMap.get(ci.productId);
+            const productTransit = transitRows.filter((t: any) => t.product_id === ci.productId);
+            let remaining = ci.qtyNeeded;
+            const newRemainingByRow: Record<string, number> = {};
+            for (const t of productTransit) {
+              if (remaining <= 0) break;
+              const toConsume = Math.min(t.remaining, remaining);
+              const newRemaining = t.remaining - toConsume;
+              const newConsumed = (t.consumed || 0) + toConsume;
+              remaining -= toConsume;
+              newRemainingByRow[t.id] = newRemaining;
+              runRaw('UPDATE transit_items SET remaining = ?, consumed = ? WHERE id = ?', [newRemaining, newConsumed, t.id]);
+            }
+            if (remaining > 0) {
+              throw { code: 'INSUFFICIENT_STOCK', message: 'No habia suficiente cantidad en transito' };
+            }
+            const newInTransit = productTransit.reduce(
+              (sum: number, t: any) => sum + (newRemainingByRow[t.id] !== undefined ? newRemainingByRow[t.id] : t.remaining),
+              0
+            );
+            runRaw(
+              `INSERT INTO movements (id, user_id, product_id, type, quantity, unit, date, cost, reason, status, register_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                crypto.randomUUID(), 'owner', ci.productId, 'SALIDA', ci.qtyNeeded, product?.unit || 'unidad', now,
+                Number(product?.cost || 0), `Venta #${saleId.slice(0, 8)}`, 'NORMAL', registerId, now,
+              ]
+            );
+            runRaw('UPDATE products SET in_transit = ?, updated_at = ? WHERE id = ?', [newInTransit, now, ci.productId]);
+          }
+
+          return { saleId, saleItems, now };
+        });
+        const outItems = result.saleItems.map((si: any) => ({
+          ...si,
+          is_recipe: !!si.is_recipe,
+          recipe_snapshot: si.recipe_snapshot ? JSON.parse(si.recipe_snapshot) : undefined,
+        }));
+        return {
+          data: {
+            success: true,
+            sale: {
+              id: result.saleId,
+              user_id: 'owner',
+              employee_id: sale.employee_id || null,
+              total_amount: sale.total_amount,
+              date: sale.date,
+              sale_type: sale.sale_type || 'SALON',
+              is_account_house: !!sale.is_account_house,
+              notes: sale.notes || null,
+              discount: sale.discount || 0,
+              payment_method: sale.payment_method || null,
+              efectivo: sale.efectivo || 0,
+              transferencia: sale.transferencia || 0,
+              usd: sale.usd || 0,
+              eur: sale.eur || 0,
+              register_id: sess?.register_id || null,
+              shift: saleShift,
+              created_at: result.now,
+            },
+            items: outItems,
+          },
+          error: null,
+        };
+      } catch (e: any) {
+        if (e?.code === 'INSUFFICIENT_STOCK' || e?.code === 'DAY_CLOSED') {
+          return { data: null, error: { message: e.message, code: e.code } };
+        }
+        return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al registrar la venta', code: 'SALE_ERROR' } });
+      }
     }
     return reply.code(400).send({ data: null, error: { message: `RPC desconocida: ${fn}` } });
   });
@@ -1066,16 +1376,19 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       runRaw('UPDATE access_pins SET pin_hash = ? WHERE id = ?', [hashPinScrypt(String(pin)), target.id]);
     }
     setActiveRole(target.role);
-    const session = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
+    // Sesión por dispositivo: cada login genera un token propio (multi-caja en LAN).
+    const session = createSession(target.role, target.pin_name || null);
+    const owner = getRaw<any>('SELECT * FROM user_session WHERE id = ?', ['owner']);
     return {
       data: {
         success: true,
-        session: serializeRow(session),
+        session: serializeRow(owner),
         pinRole: target.role,
         pinRoleName: getRoleName(target.role),
         pinModules: getRoleModules(target.role),
         pinName: target.pin_name,
         token: getOrCreateToken(),
+        sessionToken: session.token,
       },
       error: null,
     };
@@ -1104,8 +1417,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     };
   });
 
-  app.post('/api/auth/logout', async () => {
-    clearActiveRole();
+  app.post('/api/auth/logout', async (request) => {
+    // Invalidar la sesión del dispositivo que cierra sesión (no afecta a otras cajas).
+    const session = requestSession(request);
+    if (session) {
+      runRaw('DELETE FROM sessions WHERE id = ?', [session.id]);
+    } else {
+      clearActiveRole();
+    }
     return { data: { success: true }, error: null };
   });
 

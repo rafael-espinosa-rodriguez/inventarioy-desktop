@@ -77,6 +77,33 @@ function saveToken(token: string): void {
   } catch { /* ignore */ }
 }
 
+// --- Token de sesión por dispositivo (multi-caja en LAN) ---
+// El login crea una sesión por dispositivo (tabla `sessions` en el servidor). Este
+// token identifica la caja/pestaña y porta su rol propio, para que dos cajas con
+// roles distintos operen en simultáneo sin pisarse.
+const SESSION_TOKEN_KEY = 'inventarioy_session_token';
+
+function getStoredSessionToken(): string {
+  try {
+    return localStorage.getItem(SESSION_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function saveSessionToken(token: string): void {
+  if (!token) return;
+  try {
+    localStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch { /* ignore */ }
+}
+
+function clearSessionToken(): void {
+  try {
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch { /* ignore */ }
+}
+
 // --- Rol actual del usuario para el control de escrituras en servidor ---
 // El servidor usa x-inventarioy-role para bloquear escrituras de tablas
 // que el rol no debería tocar (ej: un cajero no edita pines ni nómina).
@@ -124,6 +151,7 @@ async function ensureToken(): Promise<string> {
 async function postJson<T = any>(url: string, body: any, signal?: AbortSignal): Promise<LocalResponse<T>> {
   const token = await ensureToken();
   const role = getCurrentRole();
+  const sessionToken = getStoredSessionToken();
   let res: Response;
   try {
     res = await fetch(url, {
@@ -132,6 +160,7 @@ async function postJson<T = any>(url: string, body: any, signal?: AbortSignal): 
         'Content-Type': 'application/json',
         ...(token ? { 'x-inventarioy-token': token } : {}),
         ...(role ? { 'x-inventarioy-role': role } : {}),
+        ...(sessionToken ? { 'x-inventarioy-session': sessionToken } : {}),
       },
       body: JSON.stringify(body),
       signal,
@@ -150,6 +179,9 @@ async function postJson<T = any>(url: string, body: any, signal?: AbortSignal): 
   }
   if (parsed?.data && typeof parsed.data.token === 'string') {
     saveToken(parsed.data.token);
+  }
+  if (parsed?.data && typeof parsed.data.sessionToken === 'string') {
+    saveSessionToken(parsed.data.sessionToken);
   }
   if (!res.ok) {
     return {
@@ -329,6 +361,7 @@ const authApi = {
       return { data: { session: null }, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
     }
     if (typeof parsed?.data?.token === 'string') saveToken(parsed.data.token);
+    if (parsed?.data && typeof parsed.data.sessionToken === 'string') saveSessionToken(parsed.data.sessionToken);
     return { data: parsed?.data ?? { session: null }, error: parsed?.error || null };
   },
   signOut: async (): Promise<LocalResponse> => {
@@ -478,6 +511,16 @@ export const localDb = {
   batch: async (commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: LocalFilter[]; onConflict?: string }[]): Promise<LocalResponse<{ success: boolean }>> => {
     return postJson('/api/query/batch', { commands });
   },
+  // Multi-caja: asocia la sesión de este dispositivo a una caja/punto de venta.
+  setRegister: async (registerId: string | null): Promise<LocalResponse<{ success: boolean; register?: any }>> => {
+    return postJson('/api/rpc', { fn: 'set_register', args: { register_id: registerId } });
+  },
+  // Multi-caja: devuelve la sesión del dispositivo (rol + caja asignada).
+  getMySession: async (): Promise<LocalResponse<{ session: { role: string; pin_name?: string; register?: any } | null }>> => {
+    return postJson('/api/rpc', { fn: 'get_my_session', args: {} });
+  },
+  // Limpia el token de sesión del dispositivo (logout local).
+  clearSessionToken: clearSessionToken,
 };
 
 export default localDb;

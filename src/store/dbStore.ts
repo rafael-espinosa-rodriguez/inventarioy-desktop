@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { isDateClosed } from '../lib/dateUtils';
 import { calcularNomina } from '../utils/payrollCalculations';
 import { logger } from '../lib/logger';
-import { normalizeStr, isActive } from '../lib/utils';
+import { normalizeStr, isActive, uuid } from '../lib/utils';
 import { trackLocalCreation, untrackLocalCreation } from '../lib/realtimeGuard';
 
 // Versión desktop: los datos viven en el servidor local embebido (Electron).
@@ -137,6 +137,8 @@ export interface Sale {
   usd?: number;
   eur?: number;
   subtotal?: number;
+  register_id?: string | null;
+  shift?: string;
   created_at: string;
 }
 
@@ -332,6 +334,8 @@ export interface DailyClosing {
   bar?: number;
   venta_rapida?: number;
   sales_count?: number;
+  register_id?: string | null;
+  shift?: string;
 }
 
 export interface HRDocument {
@@ -1102,7 +1106,7 @@ addProduct: async (product) => {
       throw new Error(`El producto "${product.name}" ya existe.`);
     }
 
-    const productId = crypto.randomUUID();
+    const productId = uuid();
     const now = new Date().toISOString();
 
     const productData: Product = {
@@ -1122,7 +1126,7 @@ addProduct: async (product) => {
       let pwEntry: any = null;
       if (mainWarehouse && Number(product.quantity) > 0) {
         pwEntry = {
-          id: crypto.randomUUID(), product_id: productId, warehouse_id: mainWarehouse.id,
+          id: uuid(), product_id: productId, warehouse_id: mainWarehouse.id,
           quantity: Number(product.quantity), in_transit: 0, updated_at: now,
         };
         set((state) => ({ productWarehouse: [...state.productWarehouse, pwEntry] }));
@@ -1131,7 +1135,7 @@ addProduct: async (product) => {
       const payload: any = { product: productData };
       let offlineMovement: Movement | null = null;
       if (Number(product.quantity) > 0) {
-        const movementId = crypto.randomUUID();
+        const movementId = uuid();
         offlineMovement = {
           id: movementId, user_id: user.id, product_id: productId, type: 'ENTRADA',
           quantity: Number(product.quantity), unit: product.unit, date: now,
@@ -1325,7 +1329,7 @@ addProduct: async (product) => {
     if (!product) throw new Error('Producto no encontrado');
 
     const saveOffline = async () => {
-      const movementId = crypto.randomUUID();
+      const movementId = uuid();
       const offlineMovement = { ...movement, id: movementId, user_id: user.id, date: movementDate, created_at: new Date().toISOString() } as Movement;
 
       if (movement.warehouse_id) {
@@ -1376,7 +1380,7 @@ addProduct: async (product) => {
         }
 
         if (movement.type === 'SALIDA') {
-          const transitId = crypto.randomUUID();
+          const transitId = uuid();
           const transitItem = {
             id: transitId, user_id: user.id, product_id: movement.product_id,
             quantity: Number(movement.quantity), consumed: 0, remaining: Number(movement.quantity),
@@ -1419,7 +1423,7 @@ addProduct: async (product) => {
         }));
 
         if (movement.type === 'SALIDA') {
-          const transitId = crypto.randomUUID();
+          const transitId = uuid();
           const transitItem = {
             id: transitId, user_id: user.id, product_id: movement.product_id,
             quantity: Number(movement.quantity), consumed: 0, remaining: Number(movement.quantity),
@@ -1443,7 +1447,7 @@ addProduct: async (product) => {
       return;
     }
 
-    const movementId = crypto.randomUUID();
+    const movementId = uuid();
     trackLocalCreation(movementId);
     try {
       const { data: { session } } = await localDb.auth.getSession();
@@ -1498,7 +1502,7 @@ addProduct: async (product) => {
             filters: [{ op: 'eq', column: 'id', value: pw.id }],
           });
         } else {
-          pwRowNew = { id: crypto.randomUUID(), quantity: newQty };
+          pwRowNew = { id: uuid(), quantity: newQty };
           commands.push({
             table: 'product_warehouse',
             method: 'insert',
@@ -1532,7 +1536,7 @@ addProduct: async (product) => {
             localProductFields.cost = newCost;
           }
         } else if (movement.type === 'SALIDA') {
-          const transitItemId = crypto.randomUUID();
+          const transitItemId = uuid();
           commands.push({
             table: 'transit_items',
             method: 'insert',
@@ -1610,7 +1614,7 @@ addProduct: async (product) => {
         localProductFields.quantity = Math.max(0, newQuantity);
 
         if (movement.type === 'SALIDA') {
-          const transitItemId = crypto.randomUUID();
+          const transitItemId = uuid();
           const transitReason = movement.reason || 'Enviado a cocina/preparacion';
           commands.push({
             table: 'transit_items',
@@ -1874,7 +1878,20 @@ addProduct: async (product) => {
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
 
     const saleDate = new Date(sale.date).toISOString().split('T')[0];
-    if (isDateClosed(get().dailyClosings, saleDate)) {
+    // Turno de la venta (doble turno opcional). El turno se determina por la HORA
+    // ACTUAL (el POS vende "ahora"; sale.date solo lleva el día, sin hora). El
+    // servidor es la autoridad final: aquí solo se hace un pre-check de UX.
+    let saleShift = '1';
+    try {
+      const allRes = await localDb.settings.get('');
+      const all = (allRes as any)?.data || {};
+      const enabled = !!all.double_shift_enabled;
+      const cutoff = typeof all.shift_cutoff_hour === 'number' ? all.shift_cutoff_hour : 15;
+      if (enabled) {
+        saleShift = new Date().getHours() < cutoff ? '1' : '2';
+      }
+    } catch { /* si falla, se valida en el servidor */ }
+    if (isDateClosed(get().dailyClosings, saleDate, saleShift)) {
       return { success: false, error: 'El día está cerrado, no se pueden registrar ventas' };
     }
 
@@ -1893,6 +1910,7 @@ addProduct: async (product) => {
         const productName = product?.name || 'producto';
 
         if (transitAvailable < item.quantity) {
+          console.error('ADD_SALE_PRECONDITION: TRANSITO INSUFICIENTE simple', item.product_id, item.quantity, transitAvailable);
           return { 
             success: false, 
             error: `No hay suficiente "${productName}" en transito. Necesitas: ${item.quantity}, Disponible: ${transitAvailable}` 
@@ -1908,6 +1926,7 @@ addProduct: async (product) => {
           const ingProductName = ingProduct?.name || 'ingrediente';
 
           if (transitAvailable < needed) {
+            console.error('ADD_SALE_PRECONDITION: TRANSITO INSUFICIENTE receta', ing.product_id, needed, transitAvailable);
             return { 
               success: false, 
               error: `No hay suficiente "${ingProductName}" en transito para la receta "${item.recipe_snapshot?.name}". Necesitas: ${needed}, Disponible: ${transitAvailable}` 
@@ -1924,7 +1943,7 @@ addProduct: async (product) => {
     }
 
     if (!IS_ONLINE) {
-      const tempId = crypto.randomUUID();
+      const tempId = uuid();
       const tempSale = {
         id: tempId,
         user_id: user.id,
@@ -1988,77 +2007,30 @@ addProduct: async (product) => {
       return { success: true };
     }
 
-    const saleId = crypto.randomUUID();
+const saleId = uuid();
     trackLocalCreation(saleId);
     try {
-      const saleRow = {
-        id: saleId,
+      // Venta atómica en el servidor (multi-caja en LAN): el backend valida el
+      // stock, inserta la venta + ítems y descuenta del tránsito (FIFO) en una
+      // única transacción SQLite. Evita que dos cajas vendan la última unidad.
+      const { data, error } = await localDb.rpc('sale', { sale });
+      if (error || !data?.success) {
+        const msg = error?.message || (data as any)?.error || 'Error al registrar la venta';
+        logger.error('Error en addSale (RPC):', error || data);
+        return { success: false, error: msg };
+      }
+
+      const saleWithItems = {
+        ...(data.sale || {}),
+        id: data.sale?.id || saleId,
         user_id: user.id,
-        employee_id: sale.employee_id,
-        total_amount: sale.total_amount,
-        date: sale.date,
-        sale_type: sale.sale_type,
-        is_account_house: sale.is_account_house || false,
-        notes: sale.notes,
-        discount: sale.discount,
-        payment_method: sale.payment_method || null,
-        efectivo: sale.efectivo || 0,
-        transferencia: sale.transferencia || 0,
-        usd: sale.usd || 0,
-        eur: sale.eur || 0,
-      };
-
-      const saleItems = sale.items.map(item => ({
-        sale_id: saleId,
-        product_id: item.product_id,
-        quantity: item.quantity,
-        unit_cost: item.unit_cost,
-        selling_price: item.selling_price,
-        subtotal: item.subtotal,
-        is_recipe: item.is_recipe || false,
-        recipe_snapshot: item.recipe_snapshot,
-      }));
-
-      // Insertar venta + ítems en UNA transacción: si fallan los ítems se revierte
-      // la venta (antes se borraba a mano, ahora es atómico).
-      const batchCommands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: any[]; onConflict?: string }[] = [
-        { table: 'sales', method: 'insert', data: saleRow },
-      ];
-      if (saleItems.length) {
-        batchCommands.push({ table: 'sale_items', method: 'insert', data: saleItems });
-      }
-      const batchSale = await localDb.batch(batchCommands);
-      if (batchSale.error) {
-        logger.error('Error adding sale:', batchSale.error);
-        return { success: false, error: batchSale.error.message || 'Error al registrar la venta' };
-      }
-
-      const newSale = { ...saleRow, id: saleId, created_at: new Date().toISOString() } as any;
-
-      // Consumir del tránsito. Si falla, se revierte la venta recién creada para
-      // no dejar "venta registrada sin stock descontado".
-      let consumptionError: string | null = null;
-      for (const item of sale.items) {
-        if (consumptionError) break;
-        if (!item.is_recipe) {
-          const r = await get().consumeFromTransit(item.product_id, item.quantity, `Venta #${saleId.slice(0, 8)}`);
-          if (!r.success) consumptionError = r.error || 'Error al consumir del tránsito';
-        } else if (item.is_recipe && item.recipe_snapshot) {
-          for (const ing of item.recipe_snapshot.ingredients) {
-            const r = await get().consumeFromTransit(ing.product_id, ing.quantity * item.quantity, `Venta #${saleId.slice(0, 8)} (Receta: ${item.recipe_snapshot.name})`);
-            if (!r.success) { consumptionError = r.error || 'Error al consumir del tránsito'; break; }
-          }
-        }
-      }
-
-      if (consumptionError) {
-        try { await localDb.from('sales').delete().eq('id', saleId); } catch {}
-        try { await localDb.from('sale_items').delete().eq('sale_id', saleId); } catch {}
-        return { success: false, error: consumptionError };
-      }
-
-      const saleWithItems = { ...newSale, items: saleItems };
+        items: Array.isArray(data.items) ? data.items : [],
+      } as any;
       set((state) => ({ sales: [saleWithItems, ...state.sales] }));
+
+      // Multi-caja: tras vender, el dispositivo queda al día al momento (stock,
+      // tránsito y movimientos los actualiza el servidor; aquí se re-sincronizan).
+      get().forceRefreshData().catch(() => {});
 
       return { success: true };
     } catch (error: any) {
@@ -2255,7 +2227,7 @@ addProduct: async (product) => {
 
     if (!IS_ONLINE) {
       const localMovement: Movement = {
-        id: crypto.randomUUID(),
+        id: uuid(),
         user_id: user.id,
         product_id: product.id,
         type: 'ENTRADA',
@@ -2295,7 +2267,7 @@ addProduct: async (product) => {
       ? get().productWarehouse.find(x => x.product_id === product.id && x.warehouse_id === transitItem.warehouse_id)
       : undefined;
 
-    const movementId = crypto.randomUUID();
+    const movementId = uuid();
     const movementRow = {
       id: movementId,
       user_id: user.id,
@@ -2396,7 +2368,7 @@ addProduct: async (product) => {
 
     // Todas las escrituras en una única transacción: ajustar tránsito y registrar
     // el movimiento MERMA, o no se guarda nada.
-    const movementId = crypto.randomUUID();
+    const movementId = uuid();
     const movementRow = {
       id: movementId,
       user_id: user.id,
@@ -2481,7 +2453,7 @@ addProduct: async (product) => {
     // el movimiento de consumo, o no se guarda nada.
     const isGastoVariable = product.is_gasto_variable === true;
 
-    const movementId = crypto.randomUUID();
+    const movementId = uuid();
     const movementRow = {
       id: movementId,
       user_id: user.id,
@@ -2556,7 +2528,7 @@ addProduct: async (product) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
 
-    const accountId = crypto.randomUUID();
+    const accountId = uuid();
     trackLocalCreation(accountId);
     try {
       const { data, error } = await queryWithRetry(() =>
@@ -3229,7 +3201,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) throw new Error('No hay usuario autenticado');
 
     if (!IS_ONLINE) {
-      const recipeId = crypto.randomUUID();
+      const recipeId = uuid();
       const now = new Date().toISOString();
       const offlineRecipe = {
         id: recipeId,
@@ -3252,7 +3224,7 @@ deletePendingAccount: async (accountId: string) => {
       return;
     }
 
-    const recipeId = crypto.randomUUID();
+    const recipeId = uuid();
     trackLocalCreation(recipeId);
     try {
       const { data: newRecipe, error } = await queryWithRetry(() =>
@@ -3371,7 +3343,7 @@ deletePendingAccount: async (accountId: string) => {
     if (!user) throw new Error('No hay usuario autenticado');
 
     if (!IS_ONLINE) {
-      const tempId = crypto.randomUUID();
+      const tempId = uuid();
       const tempEmployee = {
         ...employee,
         id: tempId,
@@ -3384,7 +3356,7 @@ deletePendingAccount: async (accountId: string) => {
       return;
     }
 
-    const employeeId = crypto.randomUUID();
+    const employeeId = uuid();
     trackLocalCreation(employeeId);
     try {
       // Número de expediente secuencial por negocio (ine ditable a partir de aquí).
@@ -3606,7 +3578,7 @@ deletePendingAccount: async (accountId: string) => {
     if (drafts.length === 0) {
       const now = new Date().toISOString();
       const seed: any[] = employees.map(emp => ({
-        id: crypto.randomUUID(),
+        id: uuid(),
         user_id: currentUser.id,
         month,
         year,
@@ -3726,7 +3698,7 @@ deletePendingAccount: async (accountId: string) => {
       const paidDays = draft?.vacation_days || 0;
       // Acumulación mensual (crédito).
       vacMoves.push({
-        id: crypto.randomUUID(),
+        id: uuid(),
         user_id: currentUser.id,
         employee_id: emp.id,
         month,
@@ -3739,7 +3711,7 @@ deletePendingAccount: async (accountId: string) => {
       // Vacaciones pagadas (débito).
       if (paidDays > 0) {
         vacMoves.push({
-          id: crypto.randomUUID(),
+          id: uuid(),
           user_id: currentUser.id,
           employee_id: emp.id,
           month,
@@ -3795,7 +3767,7 @@ deletePendingAccount: async (accountId: string) => {
         table: 'payroll_periods',
         method: 'insert',
         data: {
-          id: crypto.randomUUID(),
+          id: uuid(),
           user_id: currentUser.id,
           month,
           year,
@@ -3934,7 +3906,7 @@ deletePendingAccount: async (accountId: string) => {
     const now = new Date().toISOString();
     const commands: any[] = rows.map(r => {
       const full = {
-        id: r.id || crypto.randomUUID(),
+        id: r.id || uuid(),
         user_id: user.id,
         month,
         year,
@@ -3959,7 +3931,7 @@ deletePendingAccount: async (accountId: string) => {
 
     const saved = rows.map(r => ({
       ...r,
-      id: r.id || crypto.randomUUID(),
+      id: r.id || uuid(),
       user_id: user.id,
       month,
       year,
@@ -4020,7 +3992,7 @@ deletePendingAccount: async (accountId: string) => {
       .eq('year', year)
       .maybeSingle();
 
-    const periodId = existing?.id || crypto.randomUUID();
+    const periodId = existing?.id || uuid();
     const command: any = existing
       ? {
           table: 'payroll_periods',
@@ -4624,18 +4596,27 @@ deletePendingAccount: async (accountId: string) => {
     set({ dailyClosings: data || [] });
   },
 
-  createDailyClosing: async (closing) => {
+createDailyClosing: async (closing) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No autenticado' };
 
     const closingDate = new Date(closing.closing_date).toISOString().split('T')[0];
-    if (isDateClosed(get().dailyClosings, closingDate)) {
-      return { success: false, error: 'Ya existe un cierre para esta fecha' };
+    const closingShift = closing.shift || '1';
+    if (isDateClosed(get().dailyClosings, closingDate, closingShift)) {
+      return { success: false, error: 'Ya existe un cierre para esta fecha y turno' };
     }
 
+    // Etiquetar el cierre con la caja/punto de venta de este dispositivo (multi-caja).
+    let registerId: string | null = null;
+    try {
+      const sessRes = await localDb.getMySession();
+      registerId = sessRes?.data?.session?.register?.id || null;
+    } catch { /* se registra sin caja */ }
+    const closingWithRegister = { ...closing, register_id: registerId };
+
     if (!IS_ONLINE) {
-      const id = crypto.randomUUID();
-      const offlineClosing = { ...closing, id, user_id: user.id, created_at: new Date().toISOString(), sales_count: closing.sales_count || 0 } as DailyClosing;
+      const id = uuid();
+      const offlineClosing = { ...closingWithRegister, id, user_id: user.id, created_at: new Date().toISOString(), sales_count: closing.sales_count || 0 } as DailyClosing;
       set((state) => ({ dailyClosings: [offlineClosing, ...state.dailyClosings] }));
 
       return { success: true };
@@ -4645,7 +4626,7 @@ deletePendingAccount: async (accountId: string) => {
       const { data, error } = await queryWithRetry(() =>
         localDb
           .from('daily_closings')
-          .insert({ ...closing, user_id: user.id, sales_count: closing.sales_count || 0 })
+          .insert({ ...closingWithRegister, user_id: user.id, sales_count: closing.sales_count || 0 })
           .select()
           .single()
       );
@@ -4653,7 +4634,7 @@ deletePendingAccount: async (accountId: string) => {
       if (error) {
         logger.error('Error createDailyClosing:', error);
         if (error.code === '23505') {
-          return { success: false, error: 'Ya existe un cierre para esta fecha' };
+          return { success: false, error: 'Ya existe un cierre para esta fecha y turno' };
         }
         throw new Error(error.message || 'No se pudo registrar el cierre de caja');
       }

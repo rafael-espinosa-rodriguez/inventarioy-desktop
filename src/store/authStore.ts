@@ -452,6 +452,7 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       localStorage.removeItem('verifiedRole');
       localStorage.removeItem('verifiedRoleName');
       localStorage.removeItem('verifiedModules');
+      localStorage.removeItem('inventarioy_session_token');
       localStorage.setItem('inventarioy_logged_out', '1');
 
       _isInitializing = false;

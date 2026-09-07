@@ -9,6 +9,7 @@ import { NumberInput } from '../../components/ui/NumberInput';
 import { toast } from 'sonner';
 import { validateNumber, getNumberFromString, exportToExcel, isActive } from '../../lib/utils';
 import { isDateClosed } from '../../lib/dateUtils';
+import { localDb } from '../../lib/db/localClient';
 import { convertUnit, getCompatibleUnits, getUnitType, normalizeUnit, UNIT_LABELS, type UnitAbbrev } from '../../lib/unitConversion';
 import { formatNumber } from '../../lib/formatNumber';
 import TicketView from './TicketView';
@@ -70,6 +71,11 @@ export default function SalesView() {
 
   const today = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
   const [closingDate, setClosingDate] = useState(today);
+  const [doubleShiftEnabled, setDoubleShiftEnabled] = useState(false);
+  const [shiftCutoffHour, setShiftCutoffHour] = useState(15);
+  // "now" fuerza re-render periódico para que el turno actual cambie solo al
+  // cruzar la hora de corte (sin que el cajero haga nada).
+  const [now, setNow] = useState(() => new Date());
   const [searchTerm, setSearchTerm] = useState('');
   const [saleType, setSaleType] = useState<'SALON' | 'DOMICILIO' | 'BAR' | 'VENTA_RAPIDA'>('SALON');
   const [employeeId, setEmployeeId] = useState(() => {
@@ -105,6 +111,24 @@ export default function SalesView() {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [showEditItemModal, setShowEditItemModal] = useState(false);
   const [editItemQuantity, setEditItemQuantity] = useState<number>(1);
+
+  // Doble turno (opcional): cargar configuración del servidor.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await localDb.settings.get('');
+        const all = res?.data || {};
+        setDoubleShiftEnabled(!!all.double_shift_enabled);
+        setShiftCutoffHour(typeof all.shift_cutoff_hour === 'number' ? all.shift_cutoff_hour : 15);
+      } catch { /* usa los valores por defecto */ }
+    })();
+  }, []);
+
+  // Tick de reloj: recalcula el turno actual cuando el tiempo cruza la hora de corte.
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(t);
+  }, []);
   const [rawInputValues, setRawInputValues] = useState<Record<string, string>>({});
 
   const toggleAccountExpansion = (accountId: string) => {
@@ -247,9 +271,30 @@ export default function SalesView() {
     }
   };
 
+  // Turno actual (reloj): cambia solo al cruzar la hora de corte (tick de 30 s).
+  const currentShift: '1' | '2' = doubleShiftEnabled ? (now.getHours() < shiftCutoffHour ? '1' : '2') : '1';
+
+  // Turno objetivo (Opción B): el más antiguo sin cerrar que tenga ventas en la fecha.
+  // Automático: cubre el caso de un turno olvidado (ej. cerrar el Turno 1 después de las 15:00).
+  const targetShift: '1' | '2' = (() => {
+    if (!doubleShiftEnabled) return '1';
+    for (const sh of ['1', '2'] as const) {
+      const closed = isDateClosed(dailyClosings, closingDate, sh);
+      const hasSales = sales.some(s => {
+        const sd = new Date(s.date).toISOString().split('T')[0];
+        return sd === closingDate && !s.is_account_house && (s.shift || '1') === sh;
+      });
+      if (!closed && hasSales) return sh;
+    }
+    return currentShift;
+  })();
+
   const todaySales = sales.filter(s => {
     const saleDate = new Date(s.date).toISOString().split('T')[0];
-    return saleDate === closingDate && !s.is_account_house;
+    if (saleDate !== closingDate) return false;
+    if (s.is_account_house) return false;
+    if (doubleShiftEnabled && (s.shift || '1') !== targetShift) return false;
+    return true;
   });
 
   const todayQuickSales = todaySales.filter(s => s.sale_type === 'VENTA_RAPIDA').length;
@@ -259,7 +304,13 @@ export default function SalesView() {
   const todayDiscounts = todaySales.reduce((sum, s) => sum + (Number(s.discount) || 0), 0);
   const todayRefunds = 0;
 
-  const isClosed = isDateClosed(dailyClosings, closingDate);
+  // Para VENDER se evalúa el turno actual; para el cierre, el turno objetivo.
+  const isSellingBlocked = doubleShiftEnabled
+    ? isDateClosed(dailyClosings, closingDate, currentShift)
+    : isDateClosed(dailyClosings, closingDate);
+  const isTargetClosed = doubleShiftEnabled
+    ? isDateClosed(dailyClosings, closingDate, targetShift)
+    : isDateClosed(dailyClosings, closingDate);
 
   const handleExportSales = () => {
     const columns = [
@@ -398,6 +449,7 @@ export default function SalesView() {
       const result = await createDailyClosing({
         user_id: user.id,
         closing_date: closingDate,
+        shift: targetShift,
         total_sales: todayTotal,
         total_discounts: todayDiscounts,
         total_refunds: todayRefunds,
@@ -420,7 +472,7 @@ export default function SalesView() {
           closing_amount: closingAmount,
           created_by_name: selectedEmployee ? selectedEmployee.name : user.name,
         });
-        toast.success(`Cierre de caja del ${closingDate} registrado`);
+        toast.success(doubleShiftEnabled ? `Cierre de ${closingDate} · Turno ${targetShift} registrado` : `Cierre de caja del ${closingDate} registrado`);
         setShowClosingModal(false);
         getDailyClosings().catch(() => {});
         return { success: true };
@@ -835,7 +887,15 @@ setShowTicket(true);
                 onChange={e => setClosingDate(e.target.value)}
                 className="w-auto h-8 text-sm font-mono"
               />
-              {isClosed && (
+              {doubleShiftEnabled && (
+                <span
+                  className="text-xs px-2 py-1 rounded-full bg-primary/10 text-primary font-medium whitespace-nowrap"
+                  title="El turno cambia solo según la hora de corte"
+                >
+                  Turno actual: {currentShift}
+                </span>
+              )}
+              {isSellingBlocked && (
                 <span className="text-xs px-2 py-1 rounded-full bg-success/20 text-success font-medium">Cerrado</span>
               )}
             </div>
@@ -859,11 +919,13 @@ setShowTicket(true);
               variant="outline"
               size="sm"
               onClick={openClosingModal}
-              disabled={todaySales.length === 0 || isClosed}
+              disabled={todaySales.length === 0 || isTargetClosed}
               className="gap-2"
             >
               <DollarSign className="h-4 w-4" />
-              {isClosed ? 'Día Cerrado' : todaySales.length === 0 ? 'Sin ventas' : 'Cierre de Caja'}
+              {doubleShiftEnabled
+                ? (todaySales.length === 0 ? 'Sin ventas' : isTargetClosed ? 'Día Cerrado' : `Cerrar Turno ${targetShift}`)
+                : (isTargetClosed ? 'Día Cerrado' : todaySales.length === 0 ? 'Sin ventas' : 'Cierre de Caja')}
             </Button>
           </div>
         </div>
@@ -1306,14 +1368,14 @@ setShowTicket(true);
             <Button 
               className="w-full h-12 text-base gap-2" 
               onClick={handleCheckout}
-              disabled={cart.length === 0 || isClosed || isProcessingSale}
+              disabled={cart.length === 0 || isSellingBlocked || isProcessingSale}
             >
               {isProcessingSale ? (
                 <Loader2 className="h-5 w-5 animate-spin" />
               ) : (
                 <CreditCard className="h-5 w-5" />
               )}
-              {isProcessingSale ? 'Procesando...' : isClosed ? 'Día Cerrado' : 'Agregar Venta'}
+              {isProcessingSale ? 'Procesando...' : isSellingBlocked ? 'Día Cerrado' : 'Agregar Venta'}
             </Button>
           </div>
         </div>
@@ -1511,13 +1573,16 @@ setShowTicket(true);
                 onChange={e => setSelectedPendingAccount(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-border/50 bg-bg text-text text-sm"
               >
-                <option value="">Venta Rápida</option>
+                <option value="">Venta directa (sin cuenta)</option>
                 {pendingAccounts.map(account => (
                   <option key={account.id} value={account.id}>
                     {account.client_name} (${(account.total_amount || 0).toFixed(2)})
                   </option>
                 ))}
               </select>
+              <p className="text-xs text-text-secondary mt-1">
+                Seleccione una cuenta pendiente para cobrarla, o «Venta directa» para vender sin cuenta.
+              </p>
             </div>
 
             {selectedPendingAccount && (() => {
@@ -1721,7 +1786,7 @@ setShowTicket(true);
             <div className="mb-4 md:mb-6 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-text">Cierre de Caja</h2>
-                <p className="text-sm text-text-secondary">{closingDate}</p>
+                <p className="text-sm text-text-secondary">{closingDate}{doubleShiftEnabled ? ` · Turno ${targetShift}` : ''}</p>
               </div>
               <button
                 onClick={() => setShowClosingModal(false)}

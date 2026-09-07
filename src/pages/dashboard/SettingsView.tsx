@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { useDatabaseStore } from '../../store/dbStore';
-import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff, KeyRound, X, Crown } from 'lucide-react';
+import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff, KeyRound, X, Crown, Store, Plus, Trash2, Clock } from 'lucide-react';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { localDb } from '../../lib/db/localClient';
 import { toast } from 'sonner';
 import { validateNumber, getNumberFromString, esVitalicia } from '../../lib/utils';
@@ -44,6 +45,94 @@ export default function SettingsView() {
   const [licenseKey, setLicenseKey] = useState('');
   const [activating, setActivating] = useState(false);
   const [menuUrl, setMenuUrl] = useState('');
+  const [cajas, setCajas] = useState<any[]>([]);
+  const [newCajaName, setNewCajaName] = useState('');
+  const [loadingCajas, setLoadingCajas] = useState(false);
+  const [cajaToDelete, setCajaToDelete] = useState<any>(null);
+  const [doubleShiftEnabled, setDoubleShiftEnabled] = useState(false);
+  const [shiftCutoffHour, setShiftCutoffHour] = useState(15);
+
+  const loadCajas = async () => {
+    setLoadingCajas(true);
+    try {
+      const res = await localDb.from('cajas').select('*').order('created_at', { ascending: true });
+      setCajas(Array.isArray(res.data) ? res.data : []);
+    } catch { /* ignore */ }
+    setLoadingCajas(false);
+  };
+
+  const loadShiftSettings = async () => {
+    try {
+      const res = await localDb.settings.get('');
+      const all = res?.data || {};
+      setDoubleShiftEnabled(!!all.double_shift_enabled);
+      setShiftCutoffHour(typeof all.shift_cutoff_hour === 'number' ? all.shift_cutoff_hour : 15);
+    } catch { /* usa los valores por defecto */ }
+  };
+
+  useEffect(() => {
+    if (user) {
+      loadCajas();
+      loadShiftSettings();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const handleSaveShiftSettings = async () => {
+    if (!user) return;
+    const cutoff = Number(shiftCutoffHour);
+    if (!Number.isInteger(cutoff) || cutoff < 0 || cutoff > 23) {
+      toast.error('La hora de corte debe ser un número entre 0 y 23');
+      return;
+    }
+    const res1 = await localDb.settings.set('double_shift_enabled', doubleShiftEnabled);
+    if (res1.error) {
+      toast.error(res1.error.message || 'Error al guardar la configuración de turnos');
+      return;
+    }
+    const res2 = await localDb.settings.set('shift_cutoff_hour', cutoff);
+    if (res2.error) {
+      toast.error(res2.error.message || 'Error al guardar la configuración de turnos');
+      return;
+    }
+    toast.success('Configuración de turnos guardada');
+  };
+
+  const handleAddCaja = async () => {
+    const name = newCajaName.trim();
+    if (!name) {
+      toast.error('Ingrese un nombre para la caja');
+      return;
+    }
+    if (!user) return;
+    const { error } = await localDb.from('cajas').insert({ user_id: user.id, name, is_active: 1 });
+    if (error) {
+      toast.error(error.message || 'Error al crear la caja');
+      return;
+    }
+    setNewCajaName('');
+    await loadCajas();
+    toast.success('Caja creada');
+  };
+
+  const handleToggleCaja = async (id: string, isActive: boolean) => {
+    const { error } = await localDb.from('cajas').update({ is_active: isActive ? 1 : 0 }).eq('id', id);
+    if (error) {
+      toast.error(error.message || 'Error al actualizar la caja');
+      return;
+    }
+    await loadCajas();
+  };
+
+  const handleDeleteCaja = async (id: string) => {
+    const { error } = await localDb.from('cajas').delete().eq('id', id);
+    if (error) {
+      toast.error(error.message || 'Error al eliminar la caja');
+      return;
+    }
+    await loadCajas();
+    toast.success('Caja eliminada');
+  };
 
   useEffect(() => {
     if (user) {
@@ -584,6 +673,135 @@ export default function SettingsView() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* ============================================
+            SECCIÓN 3: PUNTOS DE VENTA (CAJAS)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-4 flex items-center gap-2">
+            <Store className="h-5 w-5 text-primary" />
+            Puntos de Venta (Cajas)
+          </h2>
+          <p className="text-sm text-text-secondary mb-4">
+            Registre cada caja o punto de cobro del local. Cada dispositivo elige su caja al conectar por
+            WiFi a la PC servidor, y las ventas quedan etiquetadas con esa caja para los reportes.
+          </p>
+
+          <div className="flex gap-2 mb-4">
+            <Input
+              value={newCajaName}
+              onChange={(e) => setNewCajaName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddCaja(); }}
+              placeholder="Caja 1"
+              maxLength={40}
+              className="h-8 w-36 shrink-0"
+            />
+            <Button onClick={handleAddCaja} className="h-8 gap-2 shrink-0">
+              <Plus className="h-4 w-4" />
+              Agregar
+            </Button>
+          </div>
+
+          {loadingCajas ? (
+            <p className="text-sm text-text-secondary">Cargando...</p>
+          ) : cajas.length === 0 ? (
+            <p className="text-sm text-text-secondary bg-bg/50 rounded-lg p-3">
+              Aún no hay cajas registradas. Cree su primera caja para empezar a etiquetar ventas por punto de venta.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {cajas.map((caja) => (
+                <div key={caja.id} className="flex items-center justify-between p-3 bg-bg/50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <Store className="h-4 w-4 text-text-secondary" />
+                    <span className="font-medium text-text">{caja.name}</span>
+                    <Badge variant={caja.is_active ? 'success' : 'outline'}>
+                      {caja.is_active ? 'Activa' : 'Inactiva'}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={!!caja.is_active}
+                      onCheckedChange={(v) => handleToggleCaja(caja.id, !!v)}
+                    />
+                    <Button variant="ghost" size="icon" onClick={() => setCajaToDelete(caja)} title="Eliminar">
+                      <Trash2 className="h-4 w-4 text-danger" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <ConfirmDialog
+          isOpen={!!cajaToDelete}
+          onClose={() => setCajaToDelete(null)}
+          onConfirm={() => {
+            if (cajaToDelete) handleDeleteCaja(cajaToDelete.id);
+            setCajaToDelete(null);
+          }}
+          title="Eliminar punto de venta"
+          description={`¿Seguro que deseas eliminar el punto de venta "${cajaToDelete?.name || ''}"? Las ventas ya registradas conservan su referencia.`}
+          confirmLabel="Eliminar"
+          cancelLabel="Cancelar"
+        />
+
+        {/* ============================================
+            SECCIÓN 3.5: TURNOS (DOBLE TURNO OPCIONAL)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-4 flex items-center gap-2">
+            <Clock className="h-5 w-5 text-primary" />
+            Turnos (Doble Turno)
+          </h2>
+          <p className="text-sm text-text-secondary mb-4">
+            Opcional: habilite dos turnos al día (dos cierres de caja, uno por turno). Si lo apaga,
+            todo funciona como un solo turno, como hasta ahora.
+          </p>
+
+          <div className="flex items-center justify-between p-3 bg-bg/50 rounded-lg mb-4">
+            <div className="space-y-0.5">
+              <Label className="text-sm">Doble turno</Label>
+              <p className="text-xs text-text-secondary">Permite 2 cierres de caja por día (Turno 1 y Turno 2)</p>
+            </div>
+            <Switch
+              checked={doubleShiftEnabled}
+              onCheckedChange={(v) => {
+                setDoubleShiftEnabled(!!v);
+                // Apagar persiste de inmediato (el botón solo está disponible encendido).
+                if (!v) {
+                  localDb.settings.set('double_shift_enabled', false).catch(() => {});
+                  toast.success('Doble turno desactivado');
+                }
+              }}
+            />
+          </div>
+
+          {doubleShiftEnabled && (
+            <div className="space-y-1 mb-4">
+              <Label className="text-xs">Hora de corte</Label>
+              <Input
+                type="number"
+                min={0}
+                max={23}
+                value={shiftCutoffHour}
+                onChange={(e) => setShiftCutoffHour(Number(e.target.value))}
+                className="h-9 w-36"
+              />
+              <p className="text-xs text-text-secondary">
+                Ventas hasta esta hora → Turno 1; a partir de esta hora → Turno 2 (ej. 15 = corte a las 15:00).
+              </p>
+            </div>
+          )}
+
+          {doubleShiftEnabled && (
+            <Button onClick={handleSaveShiftSettings} className="gap-2">
+              <Save className="h-4 w-4" />
+              Aplicar configuración de turnos
+            </Button>
+          )}
         </div>
 
         {/* ============================================

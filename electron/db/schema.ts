@@ -610,6 +610,86 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     CREATE INDEX IF NOT EXISTS idx_drafts_user ON payroll_drafts (user_id);
     `,
   },
+  {
+    version: 12,
+    description: 'Multi-caja en LAN: puntos de venta (cajas), sesiones por dispositivo y etiquetado register_id',
+    sql: `
+    -- Puntos de venta / cajas del negocio (gestionadas por el dueño en Settings)
+    CREATE TABLE IF NOT EXISTS cajas (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cajas_user ON cajas (user_id);
+
+    -- Sesiones por dispositivo: un token por caja/pestaña, con su propio rol y caja.
+    -- Sustituye al rol activo global (active_session_role) para la autorización de escritura.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL,
+      pin_name TEXT,
+      register_id TEXT,
+      created_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+    CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions (token);
+
+    -- Etiquetado por punto de venta en ventas, movimientos y cierres
+    ALTER TABLE sales ADD COLUMN register_id TEXT;
+    ALTER TABLE movements ADD COLUMN register_id TEXT;
+    ALTER TABLE daily_closings ADD COLUMN register_id TEXT;
+    `,
+  },
+  {
+    version: 13,
+    description: 'Doble turno opcional: shift en sales y daily_closings; UNIQUE de cierre por (fecha, turno)',
+    sql: `
+    -- Turno de la venta: '1' (hasta la hora de corte) o '2' (después). Por defecto
+    -- '1' para que los negocios de un solo turno sigan igual (funcionalidad opcional).
+    ALTER TABLE sales ADD COLUMN shift TEXT NOT NULL DEFAULT '1';
+
+    -- Reconstruir daily_closings para permitir 2 cierres por día (uno por turno).
+    -- SQLite no permite modificar constraints: se crea la tabla nueva, se copian
+    -- los datos (cierres existentes = turno 1) y se renombra.
+    CREATE TABLE IF NOT EXISTS daily_closings_new (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      closing_date TEXT NOT NULL,
+      total_sales REAL DEFAULT 0,
+      total_discounts REAL DEFAULT 0,
+      total_refunds REAL DEFAULT 0,
+      closing_amount REAL DEFAULT 0,
+      notes TEXT,
+      created_by TEXT,
+      created_by_name TEXT,
+      cup_efectivo REAL,
+      cup_transfer REAL,
+      usd REAL,
+      eur REAL,
+      salon REAL,
+      domicilio REAL,
+      bar REAL,
+      venta_rapida REAL,
+      sales_count INTEGER,
+      created_at TEXT NOT NULL,
+      zelle REAL,
+      register_id TEXT,
+      shift TEXT NOT NULL DEFAULT '1',
+      UNIQUE (user_id, closing_date, shift)
+    );
+    INSERT INTO daily_closings_new (id, user_id, closing_date, total_sales, total_discounts, total_refunds, closing_amount, notes, created_by, created_by_name, cup_efectivo, cup_transfer, usd, eur, salon, domicilio, bar, venta_rapida, sales_count, created_at, zelle, register_id, shift)
+    SELECT id, user_id, closing_date, total_sales, total_discounts, total_refunds, closing_amount, notes, created_by, created_by_name, cup_efectivo, cup_transfer, usd, eur, salon, domicilio, bar, venta_rapida, sales_count, created_at, zelle, register_id, '1' FROM daily_closings;
+    DROP TABLE daily_closings;
+    ALTER TABLE daily_closings_new RENAME TO daily_closings;
+    CREATE INDEX IF NOT EXISTS idx_closings_user ON daily_closings (user_id);
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {
