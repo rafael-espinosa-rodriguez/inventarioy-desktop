@@ -1,0 +1,13 @@
+# Tasks NNN — <título corto>
+
+> Plantilla spec-driven. Checklist atómico y ejecutable. Marcar `[x]` solo con
+> la verificación indicada en verde. Para S/quick-win, el mini-spec va en T0.
+
+## T0. Mini-spec (solo S/quick-win; en M/L borrar esta sección)
+- Qué: …
+- Done cuando: …
+
+## Tareas
+- [ ] T1: … — archivos: … — done cuando: …
+- [ ] T2: … — archivos: … — done cuando: …
+- [ ] T3 (verificación): `npm run lint` + `npm run build` en verde — done cuando: ambos pasan.

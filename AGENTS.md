@@ -76,6 +76,13 @@ Usar grep/búsqueda por nombre de interfaz (`Product`, `Sale`, `Recipe`...) o m�
 - No hacer fetch directo a servicios externos desde componentes — pasar por `localDb` (Fastify local).
 - No ejecutar migraciones ni deletes/cambios masivos sin confirmación explícita — no hay staging, toca la BD local real.
 
+## Flujo Spec-Driven (obligatorio en M/L)
+- Specs en `docs/specs/NNN-nombre/` (`spec.md` → `plan.md` → `tasks.md`). Flujo y niveles en `docs/specs/README.md`; plantillas en `docs/specs/_templates/`.
+- **S / quick-win (<1 día)**: mini-spec en `T0` de `tasks.md`. Sin spec/plan separados.
+- **M / L**: spec + plan + tasks aprobados antes de tocar código. Sin verde (`lint` + `build`, + e2e si aplica) no se cierra el spec.
+- Comandos: `/spec`, `/plan`, `/implement` (ver `.opencode/commands/`).
+- Leer `AGENTS.md` + `ARCHITECTURE.md` antes de redactar cualquier spec (son la constitución).
+
 ## Comandos
 - `npm run desktop` — build + ejecutar app desktop.
 - `npm run dev` — servidor de desarrollo Vite.
