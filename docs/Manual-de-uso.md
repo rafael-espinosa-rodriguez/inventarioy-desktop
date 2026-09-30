@@ -29,6 +29,8 @@ La primera vez que abre la aplicación debe crear su negocio:
 
 Al terminar, la aplicación genera automáticamente su **Código de Negocio** (ej.: `ABC123`). Lo verá en **Ajustes → Licencia**. Ese código es importante para activar su licencia.
 
+Al abrir el sistema por primera vez, se le mostrará la pregunta **"¿Quiere aprender a usar la App?"**. Seleccione **"Sí, ver el tutorial"** para ver una guía paso a paso de todo el sistema.
+
 ## 4. Entrar a la aplicación
 
 - Abra InventarioY e introduzca su **PIN de 4 dígitos**.
@@ -82,7 +84,23 @@ La carpeta contiene la base de datos **`inventarioy.db`** con toda la informaci�
 - **Cambié la fecha/hora del sistema.** No lo haga: la aplicación detecta retrocesos de reloj y puede bloquearse temporalmente por seguridad.
 - **¿Necesito internet para trabajar?** No. Todo funciona local. Solo necesita el WiFi del local para que los clientes abran el menú digital con el QR.
 
-## 9. Soporte y actualizaciones
+## 9. Varios puntos de venta en el mismo local (Multi-caja)
+
+Si su negocio tiene más de una caja o punto de venta, puede instalar InventarioY en varias computadoras y conectarlas a la **misma red WiFi/LAN** del local. Todas comparten la **misma base de datos central**, por lo que el inventario y las ventas se ven en tiempo real en todas las cajas.
+
+- Las cajas/puntos de venta se administran en **Configuración → Cajas / Puntos de Venta**.
+- En el panel lateral, el selector **"Caja activa"** indica desde qué caja se está vendiendo en ese momento.
+- Los **Cierres de Caja** pueden filtrarse por caja para conciliar cada punto de venta por separado.
+
+## 10. Turnos (doble cierre de caja)
+
+Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para tener **dos cierres de caja por día**.
+
+- Se configura en **Configuración → Turnos (Doble Turno)**: active el interruptor y defina la **hora de corte** entre el Turno 1 y el Turno 2.
+- Las ventas se clasifican automáticamente en el turno que corresponda según la hora en que se realizan; no hace falta seleccionar el turno al vender.
+- En **Cierres de Caja** podrá cerrar cada turno por separado y consultar el desglose de cada uno.
+
+## 11. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).
 - **Actualizaciones:** la licencia **vitalicia** incluye actualizaciones de la aplicación. Las suscripciones mensuales incluyen actualizaciones mientras estén vigentes.
