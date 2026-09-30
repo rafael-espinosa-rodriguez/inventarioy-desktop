@@ -87,4 +87,4 @@ No se requieren variables de entorno. La aplicación funciona íntegramente en l
 
 ---
 
-**¿Necesitas acceso remoto o sincronización en la nube?** Consulta [inventarioy-web](https://github.com/Rafael6357/inventarioy-web) — nuestra versión web con PWA y Supabase.
+**¿Necesitas acceso remoto o sincronización en la nube?** Consulta [inventarioy-web](https://github.com/rafael-espinosa-rodriguez/inventarioy-web) — nuestra versión web con PWA y Supabase.
