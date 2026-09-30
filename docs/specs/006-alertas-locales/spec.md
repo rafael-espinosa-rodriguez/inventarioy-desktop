@@ -44,4 +44,4 @@ fechas de nómina/impuestos. Cero red.
   1 por intervalo, solo si hay cambios desde el último aviso.
 
 ## Estado
-`borrador`
+`cerrado` (2026-09-30: lint + electron:build + build verdes, funcional 5/5 en BD temporal)

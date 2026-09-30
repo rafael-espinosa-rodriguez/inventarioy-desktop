@@ -1,6 +1,7 @@
-import { useState, useMemo, useRef } from 'react';
-import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Trash2, Filter, Pencil, X, Settings2, Scale, Printer, ChevronLeft, ChevronRight, Package } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Trash2, Filter, Pencil, X, Settings2, Scale, Printer, ChevronLeft, ChevronRight, Package, Bell } from 'lucide-react';
 import { useDatabaseStore } from '../../store/dbStore';
+import { localDb } from '../../lib/db/localClient';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
@@ -77,6 +78,19 @@ export default function StockView() {
     price: 0,
   });
   const [ropAutoDetail, setRopAutoDetail] = useState<{dailyAvg: number; suggested: number} | null>(null);
+  // Centro de alertas locales (spec 006).
+  const [alerts, setAlerts] = useState<{ kind: string; title: string; detail: string; count: number; names: string[]; link: string }[]>([]);
+  const [alertsHidden, setAlertsHidden] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await localDb.alerts.status();
+        if (alive && res?.data && Array.isArray(res.data.alerts)) setAlerts(res.data.alerts);
+      } catch { /* sin alertas si falla */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   
   const [adjustmentModal, setAdjustmentModal] = useState<{
     product: any;
@@ -429,6 +443,40 @@ export default function StockView() {
           </div>
         </div>
       </div>
+
+      {/* Centro de alertas locales (spec 006) */}
+      {alerts.length > 0 && !alertsHidden && (
+        <div className="rounded-xl border border-warning/40 bg-surface/80 backdrop-blur-sm p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-text">
+              <Bell className="h-4 w-4 text-warning" />
+              Alertas ({alerts.reduce((s, a) => s + a.count, 0)})
+            </h3>
+            <button onClick={() => setAlertsHidden(true)} className="text-text-secondary hover:text-text" title="Ocultar por esta sesión">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {alerts.map((a) => (
+              <Link
+                key={a.kind}
+                to={a.link}
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-bg/50 px-3 py-2 transition-colors hover:border-primary/40"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-text">
+                    {a.title} <span className="font-mono text-primary">· {a.count}</span>
+                  </p>
+                  <p className="truncate text-xs text-text-secondary">
+                    {a.names.length > 0 ? a.names.slice(0, 3).join(' · ') : a.detail}
+                  </p>
+                </div>
+                <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-4 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
         <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center">

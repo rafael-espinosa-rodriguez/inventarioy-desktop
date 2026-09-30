@@ -14,6 +14,8 @@ import {
   transaction,
   runBatchWrite,
   getDataDir,
+  getDb,
+  getSettingValue,
   backupNow,
   listBackups,
   restoreDatabase,
@@ -22,6 +24,7 @@ import {
   type Filter,
   type Order,
 } from '../db';
+import { collectAlerts } from '../alerts';
 import {
   getLicenseState,
   getTrialEnd,
@@ -2015,6 +2018,28 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       return { data: res, error: null };
     } catch (e: any) {
       return reply.code(400).send({ data: null, error: { message: e?.message || 'No se pudo restaurar la copia', code: 'RESTORE_ERROR' } });
+    }
+  });
+
+  // ---------- API: alertas (spec 006) ----------
+  // Resumen crítico para la card del dashboard. Con token (expone niveles).
+  app.post('/api/alerts/status', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    try {
+      const num = (key: string, def: number): number => {
+        const v = getSettingValue(key);
+        return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : def;
+      };
+      if (getSettingValue('alerts_enabled') === false) {
+        return { data: { at: new Date().toISOString(), alerts: [] }, error: null };
+      }
+      const digest = collectAlerts(getDb(), {
+        expiryDays: num('alert_expiry_days', 7),
+        licenseDays: num('alert_license_days', 7),
+      });
+      return { data: digest, error: null };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'Error de alertas', code: 'ALERTS_ERROR' } });
     }
   });
 

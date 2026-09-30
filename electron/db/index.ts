@@ -138,6 +138,15 @@ export function runAutoBackupIfDue(): string | null {
   }
 }
 
+// Lectura/escritura genérica de `settings` (spec 006: umbrales de alertas).
+export function getSettingValue(key: string): any {
+  return readSetting(key);
+}
+
+export function setSettingValue(key: string, value: any): void {
+  writeSetting(key, value);
+}
+
 export interface BackupFileInfo {
   file: string;
   size: number;

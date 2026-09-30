@@ -578,6 +578,12 @@ export const localDb = {
       return { data: parsed?.data ?? null, error: parsed?.error || null };
     },
   },
+  // Alertas locales (spec 006).
+  alerts: {
+    status: async (): Promise<LocalResponse<{ at: string; alerts: { kind: string; title: string; detail: string; count: number; names: string[]; link: string }[] }>> => {
+      return postJson('/api/alerts/status', {});
+    },
+  },
   // Ejecuta varias escrituras en una única transacción (rollback atómico).
   batch: async (commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: LocalFilter[]; onConflict?: string }[]): Promise<LocalResponse<{ success: boolean }>> => {
     return postJson('/api/query/batch', { commands });

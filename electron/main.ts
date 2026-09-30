@@ -1,7 +1,8 @@
 // Proceso principal de Electron (InventarioY Desktop)
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification } from 'electron';
 import path from 'node:path';
-import { initDatabase, getDataDir, runAutoBackupIfDue } from './db';
+import { initDatabase, getDataDir, runAutoBackupIfDue, getDb, getSettingValue, setSettingValue } from './db';
+import { collectAlerts, digestSignature } from './alerts';
 import { createServer } from './server';
 
 const DEFAULT_PORT = 4173;
@@ -90,6 +91,43 @@ async function start(): Promise<void> {
   };
   setInterval(autoBackupTick, 15 * 60 * 1000).unref?.();
   try { autoBackupTick(); } catch { /* ignore */ }
+
+  // Alertas locales (spec 006): resumen crítico al arrancar y cada 60 min.
+  // Anti-spam: notifica solo si cambió la firma desde el último aviso.
+  const numSetting = (key: string, def: number): number => {
+    const v = getSettingValue(key);
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : def;
+  };
+  const alertsTick = () => {
+    try {
+      if (getSettingValue('alerts_enabled') === false) return;
+      const digest = collectAlerts(getDb(), {
+        expiryDays: numSetting('alert_expiry_days', 7),
+        licenseDays: numSetting('alert_license_days', 7),
+      });
+      if (!digest.alerts.length) return;
+      const sig = digestSignature(digest);
+      const last = getSettingValue('alert_last_digest');
+      if (last?.sig === sig) return;
+      const total = digest.alerts.reduce((s, a) => s + a.count, 0);
+      const n = new Notification({
+        title: `InventarioY: ${total} aviso(s)`,
+        body: digest.alerts.map((a) => `• ${a.title}: ${a.count}`).join('\n'),
+      });
+      n.on('click', () => {
+        try {
+          if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.focus();
+          }
+        } catch { /* ignore */ }
+      });
+      n.show();
+      setSettingValue('alert_last_digest', { at: digest.at, sig });
+    } catch { /* nunca romper el arranque por alertas */ }
+  };
+  setInterval(alertsTick, 60 * 60 * 1000).unref?.();
+  try { alertsTick(); } catch { /* ignore */ }
 
   // IPC: impresión (usado por TicketView vía preload)
   ipcMain.handle('print', async (_event, options) => {

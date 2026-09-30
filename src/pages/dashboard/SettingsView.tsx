@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { useDatabaseStore } from '../../store/dbStore';
-import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff, KeyRound, X, Crown, Store, Plus, Trash2, Clock } from 'lucide-react';
+import { Settings, Save, User, Shield, Printer, MessageSquare, DollarSign, QrCode, Copy, ExternalLink, Download, Sparkles, Lock, ShoppingCart, WifiOff, KeyRound, X, Crown, Store, Plus, Trash2, Clock, Bell } from 'lucide-react';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -60,6 +60,10 @@ export default function SettingsView() {
   const [backupFiles, setBackupFiles] = useState<{ file: string; size: number; mtimeMs: number }[]>([]);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupRestoreFile, setBackupRestoreFile] = useState<string | null>(null);
+  // Alertas locales (spec 006).
+  const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [alertExpiryDays, setAlertExpiryDays] = useState(7);
+  const [alertLicenseDays, setAlertLicenseDays] = useState(7);
 
   const loadCajas = async () => {
     setLoadingCajas(true);
@@ -93,14 +97,48 @@ export default function SettingsView() {
     } catch { /* usa los valores por defecto */ }
   };
 
+  const loadAlertSettings = async () => {
+    try {
+      const res = await localDb.settings.get('');
+      const all = res?.data || {};
+      if (typeof all.alerts_enabled === 'boolean') setAlertsEnabled(all.alerts_enabled);
+      if (typeof all.alert_expiry_days === 'number') setAlertExpiryDays(all.alert_expiry_days);
+      if (typeof all.alert_license_days === 'number') setAlertLicenseDays(all.alert_license_days);
+    } catch { /* usa los valores por defecto */ }
+  };
+
   useEffect(() => {
     if (user) {
       loadCajas();
       loadShiftSettings();
       loadBackupStatus();
+      loadAlertSettings();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
+
+  const handleSaveAlertSettings = async () => {
+    if (!user) return;
+    const expiry = Number(alertExpiryDays);
+    const lic = Number(alertLicenseDays);
+    if (!Number.isInteger(expiry) || expiry < 1 || expiry > 90) {
+      toast.error('Vencimiento debe ser un entero entre 1 y 90 días');
+      return;
+    }
+    if (!Number.isInteger(lic) || lic < 1 || lic > 90) {
+      toast.error('Licencia debe ser un entero entre 1 y 90 días');
+      return;
+    }
+    const r1 = await localDb.settings.set('alerts_enabled', alertsEnabled);
+    const r2 = await localDb.settings.set('alert_expiry_days', expiry);
+    const r3 = await localDb.settings.set('alert_license_days', lic);
+    const err = r1.error || r2.error || r3.error;
+    if (err) {
+      toast.error(err.message || 'Error al guardar las alertas');
+      return;
+    }
+    toast.success('Alertas configuradas');
+  };
 
   const handleSaveBackupSettings = async () => {
     if (!user) return;
@@ -1000,6 +1038,70 @@ export default function SettingsView() {
           confirmLabel="Restaurar"
           cancelLabel="Cancelar"
         />
+
+        {/* ============================================
+            SECCIÓN 3.7: ALERTAS LOCALES (spec 006)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-4 flex items-center gap-2">
+            <Bell className="h-5 w-5 text-primary" />
+            Alertas
+          </h2>
+          <p className="text-sm text-text-secondary mb-4">
+            Avisos en tu equipo sobre stock bajo, vencimientos próximos y licencia
+            por vencer. Todo local, sin internet.
+          </p>
+
+          <div className="flex items-center justify-between p-3 bg-bg/50 rounded-lg mb-4">
+            <div className="space-y-0.5">
+              <Label className="text-sm">Alertas activadas</Label>
+              <p className="text-xs text-text-secondary">Notificación al abrir la app y resumen en Almacén</p>
+            </div>
+            <Switch
+              checked={alertsEnabled}
+              onCheckedChange={(v) => {
+                setAlertsEnabled(!!v);
+                if (!v) {
+                  localDb.settings.set('alerts_enabled', false).catch(() => {});
+                  toast.success('Alertas desactivadas');
+                }
+              }}
+            />
+          </div>
+
+          {alertsEnabled && (
+            <>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div className="space-y-1">
+                  <Label className="text-xs">Vence en (días)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={alertExpiryDays}
+                    onChange={(e) => setAlertExpiryDays(Number(e.target.value))}
+                    className="h-9"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Licencia avisa (días)</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={alertLicenseDays}
+                    onChange={(e) => setAlertLicenseDays(Number(e.target.value))}
+                    className="h-9"
+                  />
+                </div>
+              </div>
+              <Button onClick={handleSaveAlertSettings} className="gap-2">
+                <Save className="h-4 w-4" />
+                Guardar alertas
+              </Button>
+            </>
+          )}
+        </div>
 
         {/* ============================================
             SECCIÓN 4: CONTROL DE ACCESO
