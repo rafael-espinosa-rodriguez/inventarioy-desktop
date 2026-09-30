@@ -58,7 +58,7 @@ export default function TutorialPromptModal({ isOpen, onClose, onAccept }: Tutor
           </div>
           <div>
             <h2 id="tutorial-prompt-title" className="text-xl font-semibold text-text">
-              ¿Quieres aprender a usar la App?
+              ¿Desea aprender a usar la App?
             </h2>
             <p className="text-sm text-text-secondary mt-1">
               Descubra cómo sacarle el máximo rendimiento a su negocio en Cuba con InventarioY

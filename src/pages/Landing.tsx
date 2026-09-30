@@ -33,7 +33,7 @@ const FEATURES = [
   'Personal, roles por PIN y nómina cubana',
   'Biblioteca de documentos (PNO, Reglamento)',
   'Gráficos y análisis en tiempo real',
-  'Menú digital QR para tus clientes',
+  'Menú digital QR para sus clientes',
   'Tickets de 58/80mm e impresión',
   'Exportación de datos a Excel',
   'Multi-caja en red local (LAN)',
@@ -109,10 +109,6 @@ export default function Landing() {
             <Link to="/" className="flex items-center gap-2">
               <InventarioYLogo size="lg" variant="image" />
             </Link>
-            <div className="hidden items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 font-mono text-xs sm:flex">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-success"></span>
-              <span className="font-medium text-success">SQLITE LOCAL · 100% OFFLINE</span>
-            </div>
           </div>
           <nav className="hidden items-center gap-6 text-sm font-medium text-text-secondary lg:flex">
             <a href="#features" className="transition-colors hover:text-primary">Herramientas POS</a>
@@ -131,7 +127,7 @@ export default function Landing() {
             </Link>
             <Link to="/register" className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 font-sans text-xs font-bold uppercase tracking-wider text-black shadow-md transition-all hover:bg-primary-hover active:scale-95">
               <Zap className="h-3.5 w-3.5" />
-              <span>Prueba 7 Días</span>
+              <span>Pruebe 7 días</span>
             </Link>
             <button
               className="p-2 text-text-secondary transition-colors hover:text-text lg:hidden"
@@ -183,7 +179,7 @@ export default function Landing() {
               </Link>
               <Link to="/register" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 rounded-lg bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/20">
                 <UserPlus className="h-4 w-4" />
-                Prueba 7 Días
+                Pruebe 7 días
               </Link>
               <Link to="/acceso" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text">
                 <Users className="h-4 w-4" />
@@ -215,11 +211,11 @@ export default function Landing() {
                 </span>
               </div>
               <h1 className="hero-fade mb-5 text-3xl font-extrabold leading-[1.12] tracking-tight text-text sm:text-4xl md:text-5xl">
-                El control de tu negocio en Cuba, <span className="text-primary">incluso sin internet.</span>
+                El control de su negocio en Cuba, <span className="text-primary">incluso sin internet.</span>
               </h1>
               <p className="hero-fade mb-6 text-base leading-relaxed text-text-secondary md:text-lg">
                 Punto de venta, escandallo de recetas al gramo, control de mermas y cierres
-                de caja en moneda nacional. Instalado en tu equipo, resistente a apagones
+                de caja en moneda nacional. Instalado en su equipo, resistente a apagones
                 y caídas de conexión.
               </p>
 
@@ -228,7 +224,7 @@ export default function Landing() {
                 <div className="mb-2 flex items-center justify-between">
                   <span className="flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-primary">
                     <SlidersHorizontal className="h-3.5 w-3.5" />
-                    Elige tu sector:
+                    Elija su sector:
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 font-mono text-xs sm:grid-cols-5">
@@ -293,7 +289,7 @@ export default function Landing() {
                     <span className="h-3 w-3 rounded-full bg-danger/80"></span>
                     <span className="h-3 w-3 rounded-full bg-primary/80"></span>
                     <span className="h-3 w-3 rounded-full bg-success/80"></span>
-                    <span className="ml-2 font-mono text-xs font-medium text-text-secondary">TERMINAL-01 // TU NEGOCIO</span>
+                    <span className="ml-2 font-mono text-xs font-medium text-text-secondary">TERMINAL-01 // SU NEGOCIO</span>
                   </div>
                   <div className="flex items-center gap-1.5 rounded bg-surface px-2 py-0.5 font-mono text-xs text-success">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span>
@@ -407,7 +403,7 @@ export default function Landing() {
                       </div>
                     </div>
                     <div className="flex items-center justify-between pt-1 font-mono text-[11px] text-text-secondary">
-                      <span>Base de datos local en tu equipo (WAL atómico)</span>
+                      <span>Base de datos local en su equipo (WAL atómico)</span>
                       <span className="font-semibold text-success">SIN INTERNET</span>
                     </div>
                   </div>
@@ -585,7 +581,7 @@ export default function Landing() {
                   </div>
                   <h3 className="mb-3 text-xl font-bold text-text">Moneda nacional y cierre con validación</h3>
                   <p className="mb-6 text-sm leading-relaxed text-text-secondary">
-                    Cobra en efectivo CUP, transferencia, USD o EUR con tasa
+                    Cobre en efectivo CUP, transferencia, USD o EUR con tasa
                     configurable. Al cerrar el turno, el sistema compara lo contado
                     contra lo esperado y muestra cualquier descuadre al instante.
                   </p>
@@ -623,10 +619,10 @@ export default function Landing() {
                 <span>SIMULADOR DE FUGA FINANCIERA</span>
               </div>
               <h2 className="text-2xl font-bold tracking-tight text-text md:text-4xl">
-                Calcula tus pérdidas silenciosas
+                Calcule sus pérdidas silenciosas
               </h2>
               <p className="mt-2 text-sm text-text-secondary md:text-base">
-                Comprueba cuántos CUP se escapan al mes cuando se cocina "al ojo"
+                Compruebe cuántos CUP se escapan al mes cuando se cocina "al ojo"
                 sin escandallo estricto.
               </p>
             </div>
@@ -685,7 +681,7 @@ export default function Landing() {
                     </div>
                   </div>
                   <Link to="/register" className="w-full rounded bg-primary py-2.5 px-4 text-xs font-bold uppercase tracking-wider text-black transition-all hover:bg-primary-hover">
-                    Blindar mis recetas ahora
+                    Proteja sus recetas ahora
                   </Link>
                 </div>
               </div>
@@ -707,10 +703,10 @@ export default function Landing() {
             </div>
             <div className="relative grid grid-cols-1 gap-6 md:grid-cols-4">
               {[
-                { n: '01', t: 'Instala en tu equipo', d: 'Instalador único para Windows 10/11 de 64-bit. No requiere SQL Server ni motores pesados.', time: '2 min', hot: false },
-                { n: '02', t: 'Registra tus productos', d: 'Carga insumos, platos y precios en CUP con entrada rápida por teclado y categorías.', time: '5 min', hot: false },
-                { n: '03', t: 'Asigna PINs y roles', d: 'Crea el PIN de cada empleado y controla qué módulos ve cada rol.', time: '3 min', hot: false },
-                { n: '04', t: 'Abre caja y cobra', d: 'Vende, imprime tickets de 58/80mm y controla mermas desde el primer turno.', time: '5 min', hot: true },
+                { n: '01', t: 'Instale en su equipo', d: 'Instalador único para Windows 10/11 de 64-bit. No requiere SQL Server ni motores pesados.', time: '2 min', hot: false },
+                { n: '02', t: 'Registre sus productos', d: 'Cargue insumos, platos y precios en CUP con entrada rápida por teclado y categorías.', time: '5 min', hot: false },
+                { n: '03', t: 'Asigne PINs y roles', d: 'Cree el PIN de cada empleado y controle qué módulos ve cada rol.', time: '3 min', hot: false },
+                { n: '04', t: 'Abra caja y cobre', d: 'Venda, imprima tickets de 58/80mm y controle mermas desde el primer turno.', time: '5 min', hot: true },
               ].map((s) => (
                 <div key={s.n} className="fade-up relative flex flex-col justify-between rounded-xl border border-border bg-surface p-6">
                   <div>
@@ -872,21 +868,21 @@ export default function Landing() {
         <section id="faq" className="w-full border-b border-border bg-bg px-4 py-20 md:px-8">
           <div className="mx-auto max-w-4xl">
             <div className="fade-up mx-auto mb-16 max-w-xl text-center">
-              <span className="mb-2 block font-mono text-xs font-semibold uppercase tracking-widest text-primary">Despeja tus dudas</span>
+              <span className="mb-2 block font-mono text-xs font-semibold uppercase tracking-widest text-primary">Despeje sus dudas</span>
               <h2 className="text-2xl font-bold tracking-tight text-text md:text-4xl">
                 Preguntas frecuentes
               </h2>
             </div>
             <div className="fade-up space-y-4">
               {[
-                { icon: Zap, color: 'text-primary', q: '¿Qué pasa si se va la luz de golpe?', a: 'No pierdes nada. La base de datos local trabaja en modo WAL con escritura atómica: al encender el equipo, el turno, los tickets y el stock están exactamente como quedaron. Por eso el sistema sobrevive a los apagones mejor que cualquier hoja de cálculo.' },
-                { icon: Save, color: 'text-success', q: '¿Cómo respaldo mis datos sin internet?', a: 'La aplicación guarda respaldos automáticos internos de la base de datos. Además, puedes copiar manualmente el archivo de datos a una memoria USB como copia externa. Ninguna información sale a internet: eres el dueño físico de tus datos.' },
+                { icon: Zap, color: 'text-primary', q: '¿Qué pasa si se va la luz de golpe?', a: 'No pierde nada. La base de datos local trabaja en modo WAL con escritura atómica: al encender el equipo, el turno, los tickets y el stock están exactamente como quedaron. Por eso el sistema sobrevive a los apagones mejor que cualquier hoja de cálculo.' },
+                { icon: Save, color: 'text-success', q: '¿Cómo respaldo mis datos sin internet?', a: 'La aplicación guarda respaldos automáticos internos de la base de datos. Además, puede copiar manualmente el archivo de datos a una memoria USB como copia externa. Ninguna información sale a internet: es el dueño físico de sus datos.' },
                 { icon: Printer, color: 'text-primary', q: '¿Funciona con impresoras térmicas?', a: 'Sí, imprime tickets en impresoras térmicas de 58mm y 80mm conectadas por USB, las más comunes en Cuba.' },
-                { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribes por WhatsApp al +53 54523884, realizas el pago en CUP por transferencia o en efectivo, y recibes tu clave de activación digital para tu equipo. Sin trámites bancarios ni tarjetas internacionales.' },
-                { icon: ReceiptText, color: 'text-primary', q: '¿Emite facturas o comprobantes?', a: 'Sí. Cada venta puede generar su comprobante con folio anual (CR-AAAA-NNNNNN), o puedes crearlo manual. Se imprime en térmico de 58/80mm o en hoja A5, admite anulación con auditoría y exporta el resumen mensual para ONAT a Excel.' },
-                { icon: Rocket, color: 'text-primary', q: '¿Cómo empiezo a usar InventarioY?', a: 'Instala la aplicación, registra tu negocio con un nombre y un PIN de acceso, y tendrás 7 días de prueba gratis con todas las funciones. Con ese PIN creas accesos por rol para tus empleados.' },
+                { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribe por WhatsApp al +53 54523884, realiza el pago en CUP por transferencia o en efectivo, y recibe su clave de activación digital para su equipo. Sin trámites bancarios ni tarjetas internacionales.' },
+                { icon: ReceiptText, color: 'text-primary', q: '¿Emite facturas o comprobantes?', a: 'Sí. Cada venta puede generar su comprobante con folio anual (CR-AAAA-NNNNNN), o puede crearlo manual. Se imprime en térmico de 58/80mm o en hoja A5, admite anulación con auditoría y exporta el resumen mensual para ONAT a Excel.' },
+                { icon: Rocket, color: 'text-primary', q: '¿Cómo empiezo a usar InventarioY?', a: 'Instale la aplicación, registre su negocio con un nombre y un PIN de acceso, y tendrá 7 días de prueba gratis con todas las funciones. Con ese PIN cree accesos por rol para sus empleados.' },
                 { icon: Users, color: 'text-success', q: '¿Puedo tener múltiples usuarios?', a: 'Sí. Cada empleado accede con su PIN de 4 dígitos y un rol (dueño, económico, admin, supervisor, dependiente). Cada rol ve solo los módulos que le corresponden.' },
-                { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 130,000 CUP en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con tu clave permanente.' },
+                { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 130,000 CUP en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con su clave permanente.' },
               ].map((f) => (
                 <div key={f.q} className="rounded-xl border border-border bg-surface p-5">
                   <h3 className="mb-2 flex items-center justify-between text-base font-bold text-text">
@@ -909,10 +905,10 @@ export default function Landing() {
                 <span>Despliegue inmediato</span>
               </div>
               <h2 className="mb-3 text-2xl font-bold tracking-tight text-text md:text-3xl">
-                Toma el control de tu negocio hoy mismo.
+                Tome el control de su negocio hoy mismo.
               </h2>
               <p className="text-sm leading-relaxed text-text-secondary">
-                Instala InventarioY en tu equipo. Prueba el escandallo, el cierre con
+                Instale InventarioY en su equipo. Pruebe el escandallo, el cierre con
                 validación y el punto de venta durante 7 días sin costo.
               </p>
             </div>
@@ -943,12 +939,8 @@ export default function Landing() {
             </div>
             <p className="font-sans text-xs leading-relaxed text-text-secondary">
               Punto de venta, inventario y gestión para negocios en Cuba.
-              100% offline, instalado en tu equipo.
+              100% offline, instalado en su equipo.
             </p>
-            <div className="inline-flex items-center gap-1.5 rounded border border-border bg-surface px-2 py-1 text-[10px] text-success">
-              <span className="h-1.5 w-1.5 rounded-full bg-success"></span>
-              <span>AUTÓNOMO · LOCAL · SIN NUBE</span>
-            </div>
           </div>
           <div>
             <h4 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-text">Módulos</h4>
