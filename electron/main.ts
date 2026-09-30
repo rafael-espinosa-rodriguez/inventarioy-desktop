@@ -1,7 +1,7 @@
 // Proceso principal de Electron (InventarioY Desktop)
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
 import path from 'node:path';
-import { initDatabase, getDataDir } from './db';
+import { initDatabase, getDataDir, runAutoBackupIfDue } from './db';
 import { createServer } from './server';
 
 const DEFAULT_PORT = 4173;
@@ -71,6 +71,26 @@ async function start(): Promise<void> {
 
   const port = getPort();
 
+  // IPC: diálogo nativo para elegir carpeta de respaldos (spec 002)
+  ipcMain.handle('select-folder', async () => {
+    const win = BrowserWindow.getFocusedWindow() || mainWindow;
+    try {
+      const res = await dialog.showOpenDialog(win as any, { properties: ['openDirectory'] });
+      if (res.canceled || !res.filePaths?.length) return null;
+      return res.filePaths[0];
+    } catch {
+      return null;
+    }
+  });
+
+  // Programador de respaldo automático (spec 002): revisa cada 15 min si toca
+  // según backup_interval_h / backup_last_at. Todo local, sin red.
+  const autoBackupTick = () => {
+    try { runAutoBackupIfDue(); } catch { /* el error queda en backup_last_error */ }
+  };
+  setInterval(autoBackupTick, 15 * 60 * 1000).unref?.();
+  try { autoBackupTick(); } catch { /* ignore */ }
+
   // IPC: impresión (usado por TicketView vía preload)
   ipcMain.handle('print', async (_event, options) => {
     const win = BrowserWindow.getFocusedWindow() || mainWindow;
@@ -130,6 +150,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  try { runAutoBackupIfDue(); } catch { /* ignore */ }
   try { server?.close(); } catch { /* ignore */ }
 });
 

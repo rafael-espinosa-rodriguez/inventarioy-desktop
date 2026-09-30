@@ -507,6 +507,34 @@ export const localDb = {
       return postJson('/api/license/simulate', args);
     },
   },
+  // Respaldos de la BD local (spec 002).
+  backup: {
+    status: async (): Promise<LocalResponse<{
+      dir: string;
+      intervalH: number;
+      keepN: number;
+      lastAt: string | null;
+      lastError: string;
+      files: { file: string; size: number; mtimeMs: number }[];
+    }>> => {
+      let res: Response;
+      try {
+        res = await fetch('/api/backup/status', { method: 'GET' });
+      } catch (e: any) {
+        return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
+      }
+      let parsed: any = {};
+      try { parsed = await res.json(); } catch { /* ignore */ }
+      if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
+      return { data: parsed?.data ?? null, error: parsed?.error || null };
+    },
+    now: async (): Promise<LocalResponse<{ path: string; file: string; dir: string; at: string }>> => {
+      return postJson('/api/backup/now', {});
+    },
+    restore: async (file: string): Promise<LocalResponse<{ restoredFrom: string; safetyCopy: string; at: string }>> => {
+      return postJson('/api/backup/restore', { file });
+    },
+  },
   // Ejecuta varias escrituras en una única transacción (rollback atómico).
   batch: async (commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: LocalFilter[]; onConflict?: string }[]): Promise<LocalResponse<{ success: boolean }>> => {
     return postJson('/api/query/batch', { commands });

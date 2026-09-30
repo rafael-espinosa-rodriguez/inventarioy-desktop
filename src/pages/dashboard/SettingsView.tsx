@@ -51,6 +51,15 @@ export default function SettingsView() {
   const [cajaToDelete, setCajaToDelete] = useState<any>(null);
   const [doubleShiftEnabled, setDoubleShiftEnabled] = useState(false);
   const [shiftCutoffHour, setShiftCutoffHour] = useState(15);
+  // Respaldo de la BD local (spec 002). Solo owner (la ruta /settings ya es owner-only).
+  const [backupDir, setBackupDir] = useState('');
+  const [backupIntervalH, setBackupIntervalH] = useState(6);
+  const [backupKeepN, setBackupKeepN] = useState(5);
+  const [backupLastAt, setBackupLastAt] = useState<string | null>(null);
+  const [backupLastError, setBackupLastError] = useState('');
+  const [backupFiles, setBackupFiles] = useState<{ file: string; size: number; mtimeMs: number }[]>([]);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupRestoreFile, setBackupRestoreFile] = useState<string | null>(null);
 
   const loadCajas = async () => {
     setLoadingCajas(true);
@@ -70,13 +79,96 @@ export default function SettingsView() {
     } catch { /* usa los valores por defecto */ }
   };
 
+  const loadBackupStatus = async () => {
+    try {
+      const res = await localDb.backup.status();
+      const d = res?.data;
+      if (!d) return;
+      setBackupDir(typeof d.dir === 'string' ? d.dir : '');
+      if (typeof d.intervalH === 'number') setBackupIntervalH(d.intervalH);
+      if (typeof d.keepN === 'number') setBackupKeepN(d.keepN);
+      setBackupLastAt(d.lastAt || null);
+      setBackupLastError(typeof d.lastError === 'string' ? d.lastError : '');
+      setBackupFiles(Array.isArray(d.files) ? d.files : []);
+    } catch { /* usa los valores por defecto */ }
+  };
+
   useEffect(() => {
     if (user) {
       loadCajas();
       loadShiftSettings();
+      loadBackupStatus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
+
+  const handleSaveBackupSettings = async () => {
+    if (!user) return;
+    const intervalH = Number(backupIntervalH);
+    const keepN = Number(backupKeepN);
+    if (!Number.isInteger(intervalH) || intervalH < 1 || intervalH > 720) {
+      toast.error('El intervalo debe ser un número entero entre 1 y 720 horas');
+      return;
+    }
+    if (!Number.isInteger(keepN) || keepN < 1 || keepN > 50) {
+      toast.error('Conservar debe ser un número entero entre 1 y 50 copias');
+      return;
+    }
+    const dir = backupDir.trim();
+    const r1 = await localDb.settings.set('backup_dir', dir);
+    const r2 = await localDb.settings.set('backup_interval_h', intervalH);
+    const r3 = await localDb.settings.set('backup_keep_n', keepN);
+    const err = r1.error || r2.error || r3.error;
+    if (err) {
+      toast.error(err.message || 'Error al guardar la configuración de respaldo');
+      return;
+    }
+    await loadBackupStatus();
+    toast.success('Configuración de respaldo guardada');
+  };
+
+  const handleBackupNow = async () => {
+    if (!user || backupBusy) return;
+    setBackupBusy(true);
+    try {
+      const res = await localDb.backup.now();
+      if (res.error) {
+        toast.error(res.error.message || 'No se pudo crear el respaldo');
+      } else {
+        toast.success(`Respaldo creado: ${res.data?.file || ''}`);
+        await loadBackupStatus();
+      }
+    } catch {
+      toast.error('No se pudo crear el respaldo');
+    }
+    setBackupBusy(false);
+  };
+
+  const handleSelectBackupFolder = async () => {
+    try {
+      const w = window as any;
+      const picked = w?.desktop?.selectFolder ? await w.desktop.selectFolder() : null;
+      if (typeof picked === 'string' && picked.trim()) setBackupDir(picked.trim());
+    } catch { /* sin diálogo nativo: editar la ruta a mano */ }
+  };
+
+  const handleBackupRestore = async () => {
+    if (!user || !backupRestoreFile || backupBusy) return;
+    setBackupBusy(true);
+    try {
+      const res = await localDb.backup.restore(backupRestoreFile);
+      if (res.error) {
+        toast.error(res.error.message || 'No se pudo restaurar la copia');
+      } else {
+        toast.success(`Restaurado desde ${res.data?.restoredFrom || ''}. Recargando…`);
+        setTimeout(() => window.location.reload(), 1200);
+      }
+    } catch {
+      toast.error('No se pudo restaurar la copia');
+    }
+    setBackupRestoreFile(null);
+    setBackupBusy(false);
+  };
 
   const handleSaveShiftSettings = async () => {
     if (!user) return;
@@ -803,6 +895,111 @@ export default function SettingsView() {
             </Button>
           )}
         </div>
+
+        {/* ============================================
+            SECCIÓN 3.6: RESPALDO DE LA BASE DE DATOS (spec 002)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-4 flex items-center gap-2">
+            <Download className="h-5 w-5 text-primary" />
+            Respaldo de Datos
+          </h2>
+          <p className="text-sm text-text-secondary mb-4">
+            Copias automáticas de la base de datos en tu equipo o en una memoria USB.
+            Ante un apagón o un disco dañado, restaura una copia y sigue trabajando.
+          </p>
+
+          <div className="mb-4 rounded-lg border border-border/50 bg-bg/40 p-3 text-sm">
+            <p className="text-text-secondary">Último respaldo</p>
+            <p className="mt-0.5 font-medium text-text">
+              {backupLastAt ? new Date(backupLastAt).toLocaleString('es-ES') : 'Aún no hay respaldos'}
+            </p>
+            {backupLastError ? (
+              <p className="mt-1 text-xs text-danger">Último error: {backupLastError}</p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1 mb-4">
+            <Label className="text-xs">Carpeta de respaldos</Label>
+            <div className="flex gap-2">
+              <Input
+                value={backupDir}
+                onChange={(e) => setBackupDir(e.target.value)}
+                placeholder="Vacío = carpeta de datos de la app (vale una ruta de USB)"
+                className="h-9 flex-1"
+              />
+              <Button variant="outline" onClick={handleSelectBackupFolder} className="h-9 shrink-0">
+                Examinar…
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="space-y-1">
+              <Label className="text-xs">Cada (horas)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={720}
+                value={backupIntervalH}
+                onChange={(e) => setBackupIntervalH(Number(e.target.value))}
+                className="h-9"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Conservar (copias)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                value={backupKeepN}
+                onChange={(e) => setBackupKeepN(Number(e.target.value))}
+                className="h-9"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            <Button onClick={handleSaveBackupSettings} className="gap-2">
+              <Save className="h-4 w-4" />
+              Guardar configuración
+            </Button>
+            <Button variant="outline" onClick={handleBackupNow} disabled={backupBusy} className="gap-2">
+              <Download className="h-4 w-4" />
+              {backupBusy ? 'Respaldando…' : 'Respaldar ahora'}
+            </Button>
+          </div>
+
+          {backupFiles.length > 0 && (
+            <div className="space-y-1">
+              <Label className="text-xs">Copias disponibles (clic para restaurar)</Label>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-border/50">
+                {backupFiles.map((f) => (
+                  <button
+                    key={f.file}
+                    onClick={() => setBackupRestoreFile(f.file)}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-surface-hover"
+                  >
+                    <span className="truncate font-mono text-text">{f.file}</span>
+                    <span className="shrink-0 text-text-secondary">
+                      {(f.size / 1024).toFixed(0)} KB · {new Date(f.mtimeMs).toLocaleString('es-ES')}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <ConfirmDialog
+          isOpen={!!backupRestoreFile}
+          onClose={() => setBackupRestoreFile(null)}
+          onConfirm={handleBackupRestore}
+          title="Restaurar respaldo"
+          description={`¿Restaurar "${backupRestoreFile || ''}"? Se guardará una copia del estado actual y la aplicación se recargará con los datos de la copia.`}
+          confirmLabel="Restaurar"
+          cancelLabel="Cancelar"
+        />
 
         {/* ============================================
             SECCIÓN 4: CONTROL DE ACCESO

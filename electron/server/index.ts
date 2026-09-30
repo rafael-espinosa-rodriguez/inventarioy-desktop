@@ -14,6 +14,11 @@ import {
   transaction,
   runBatchWrite,
   getDataDir,
+  backupNow,
+  listBackups,
+  restoreDatabase,
+  BACKUP_SETTING_KEYS,
+  BACKUP_DEFAULTS,
   type Filter,
   type Order,
 } from '../db';
@@ -1700,6 +1705,62 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       },
       error: null,
     };
+  });
+
+  // ---------- API: respaldos (spec 002) ----------
+  // Estado público (nombres de archivo y fechas; sin contenido sensible).
+  app.get('/api/backup/status', async () => {
+    try {
+      const dirRow = getRaw<any>('SELECT value FROM settings WHERE key = ?', [BACKUP_SETTING_KEYS.dir]);
+      const intRow = getRaw<any>('SELECT value FROM settings WHERE key = ?', [BACKUP_SETTING_KEYS.intervalH]);
+      const keepRow = getRaw<any>('SELECT value FROM settings WHERE key = ?', [BACKUP_SETTING_KEYS.keepN]);
+      const lastRow = getRaw<any>('SELECT value FROM settings WHERE key = ?', [BACKUP_SETTING_KEYS.lastAt]);
+      const errRow = getRaw<any>('SELECT value FROM settings WHERE key = ?', [BACKUP_SETTING_KEYS.lastError]);
+      const parse = (r: any, fb: any) => {
+        if (!r?.value) return fb;
+        try { return JSON.parse(r.value); } catch { return r.value; }
+      };
+      return {
+        data: {
+          dir: parse(dirRow, '') || getDataDir(),
+          intervalH: typeof parse(intRow, null) === 'number' ? parse(intRow, null) : BACKUP_DEFAULTS.intervalH,
+          keepN: typeof parse(keepRow, null) === 'number' ? parse(keepRow, null) : BACKUP_DEFAULTS.keepN,
+          lastAt: parse(lastRow, null),
+          lastError: parse(errRow, '') || '',
+          files: listBackups(),
+        },
+        error: null,
+      };
+    } catch (e: any) {
+      return { data: null, error: { message: e?.message || 'Error de respaldo', code: 'BACKUP_ERROR' } };
+    }
+  });
+
+  // Respaldo manual inmediato a la carpeta configurada.
+  app.post('/api/backup/now', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    try {
+      const res = backupNow('manual');
+      return { data: res, error: null };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'No se pudo crear el respaldo', code: 'BACKUP_ERROR' } });
+    }
+  });
+
+  // Restaura una copia (doble confirmación en UI). Deja copia pre-restore.
+  app.post('/api/backup/restore', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    const body = (request.body || {}) as { file?: string };
+    const file = String(body.file || '').trim();
+    if (!file) {
+      return reply.code(400).send({ data: null, error: { message: 'Falta el archivo de respaldo' } });
+    }
+    try {
+      const res = restoreDatabase(file);
+      return { data: res, error: null };
+    } catch (e: any) {
+      return reply.code(400).send({ data: null, error: { message: e?.message || 'No se pudo restaurar la copia', code: 'RESTORE_ERROR' } });
+    }
   });
 
   // ---------- API: settings (ZELLE y demás) ----------

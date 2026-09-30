@@ -4618,6 +4618,8 @@ createDailyClosing: async (closing) => {
       const id = uuid();
       const offlineClosing = { ...closingWithRegister, id, user_id: user.id, created_at: new Date().toISOString(), sales_count: closing.sales_count || 0 } as DailyClosing;
       set((state) => ({ dailyClosings: [offlineClosing, ...state.dailyClosings] }));
+      // Respaldo automático al cerrar caja (spec 002; no bloquea el cierre).
+      try { (localDb.backup.now() as Promise<any>).catch(() => {}); } catch { /* ignore */ }
 
       return { success: true };
     }
@@ -4640,6 +4642,8 @@ createDailyClosing: async (closing) => {
       }
 
       set((state) => ({ dailyClosings: [data, ...state.dailyClosings] }));
+      // Respaldo automático al cerrar caja (spec 002; no bloquea el cierre).
+      try { (localDb.backup.now() as Promise<any>).catch(() => {}); } catch { /* ignore */ }
       return { success: true };
     } catch (error: any) {
       logger.error('Error en createDailyClosing:', error);

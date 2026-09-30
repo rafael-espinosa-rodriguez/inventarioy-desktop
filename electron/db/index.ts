@@ -17,28 +17,199 @@ export function getDataDir(): string {
 // Conserva hasta MAX_BACKUPS copias con nombre inventarioy-backup-<fecha>.db.
 const MAX_BACKUPS = 5;
 
+// ---------- Respaldos configurables (spec 002) ----------
+// Claves en `settings`: backup_dir, backup_interval_h, backup_keep_n,
+// backup_last_at, backup_last_error.
+export const BACKUP_SETTING_KEYS = {
+  dir: 'backup_dir',
+  intervalH: 'backup_interval_h',
+  keepN: 'backup_keep_n',
+  lastAt: 'backup_last_at',
+  lastError: 'backup_last_error',
+} as const;
+
+export const BACKUP_DEFAULTS = {
+  intervalH: 6,
+  keepN: 5,
+} as const;
+
+function readSetting(key: string): any {
+  try {
+    const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as any;
+    if (!row?.value) return undefined;
+    try { return JSON.parse(row.value); } catch { return row.value; }
+  } catch {
+    return undefined;
+  }
+}
+
+function writeSetting(key: string, value: any): void {
+  const d = getDb();
+  const v = typeof value === 'string' ? value : JSON.stringify(value);
+  d.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(key, v, new Date().toISOString());
+}
+
+function dbStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+// Copia física consistente (checkpoint WAL previo) + rotación por prefijo.
+function copyDbToDir(dir: string, prefix: string, keepN: number): string {
+  const dbPath = path.join(dataDir, 'inventarioy.db');
+  if (!fs.existsSync(dbPath)) throw new Error('Base de datos no encontrada');
+  fs.mkdirSync(dir, { recursive: true });
+  try { db?.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ok */ }
+  const dest = path.join(dir, `${prefix}${dbStamp()}.db`);
+  fs.copyFileSync(dbPath, dest);
+  const re = new RegExp(`^${prefix}.*\\.db$`);
+  const files = fs.readdirSync(dir)
+    .filter(f => re.test(f))
+    .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  for (const b of files.slice(Math.max(1, keepN))) {
+    try { fs.unlinkSync(path.join(dir, b.f)); } catch { /* ignore */ }
+  }
+  return dest;
+}
+
+function resolveBackupDir(): string {
+  const configured = readSetting(BACKUP_SETTING_KEYS.dir);
+  if (typeof configured === 'string' && configured.trim()) {
+    try {
+      fs.mkdirSync(configured.trim(), { recursive: true });
+      fs.accessSync(configured.trim(), fs.constants.W_OK);
+      return configured.trim();
+    } catch { /* cae al dataDir */ }
+  }
+  return dataDir;
+}
+
 export function backupDatabase(): string | null {
   if (!dataDir) return null;
-  const dbPath = path.join(dataDir, 'inventarioy.db');
-  if (!fs.existsSync(dbPath)) return null;
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const backupPath = path.join(dataDir, `inventarioy-backup-${stamp}.db`);
   try {
-    // Backup consistente aunque la BD esté en WAL: checkpoint + copia física.
-    try { db?.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ok */ }
-    fs.copyFileSync(dbPath, backupPath);
-    // Rotación: borrar backups antiguos hasta dejar MAX_BACKUPS.
-    const backups = fs.readdirSync(dataDir)
-      .filter(f => /^inventarioy-backup-.*\.db$/.test(f))
-      .map(f => ({ f, t: fs.statSync(path.join(dataDir, f)).mtimeMs }))
-      .sort((a, b) => b.t - a.t);
-    for (const b of backups.slice(MAX_BACKUPS)) {
-      try { fs.unlinkSync(path.join(dataDir, b.f)); } catch { /* ignore */ }
-    }
-    return backupPath;
+    return copyDbToDir(dataDir, 'inventarioy-backup-', MAX_BACKUPS);
   } catch {
     return null;
   }
+}
+
+export interface BackupNowResult {
+  path: string;
+  file: string;
+  dir: string;
+  at: string;
+}
+
+// Respaldo bajo demanda (manual o automático). Actualiza backup_last_at/error.
+export function backupNow(kind: 'manual' | 'auto'): BackupNowResult {
+  const dir = resolveBackupDir();
+  const keepRaw = readSetting(BACKUP_SETTING_KEYS.keepN);
+  const keepN = typeof keepRaw === 'number' && Number.isFinite(keepRaw) && keepRaw > 0
+    ? Math.floor(keepRaw) : BACKUP_DEFAULTS.keepN;
+  try {
+    const dest = copyDbToDir(dir, kind === 'manual' ? 'inventarioy-manual-' : 'inventarioy-auto-', keepN);
+    const at = new Date().toISOString();
+    writeSetting(BACKUP_SETTING_KEYS.lastAt, at);
+    writeSetting(BACKUP_SETTING_KEYS.lastError, '');
+    return { path: dest, file: path.basename(dest), dir, at };
+  } catch (e: any) {
+    writeSetting(BACKUP_SETTING_KEYS.lastError, e?.message || 'Error de respaldo');
+    throw e;
+  }
+}
+
+// ¿Toca respaldo automático? Compara backup_last_at con backup_interval_h.
+// Devuelve la ruta creada o null (nada que hacer o fallo ya registrado).
+export function runAutoBackupIfDue(): string | null {
+  if (!dataDir) return null;
+  const intRaw = readSetting(BACKUP_SETTING_KEYS.intervalH);
+  const intervalH = typeof intRaw === 'number' && Number.isFinite(intRaw) && intRaw > 0
+    ? intRaw : BACKUP_DEFAULTS.intervalH;
+  const lastRaw = readSetting(BACKUP_SETTING_KEYS.lastAt);
+  const lastMs = typeof lastRaw === 'string' ? new Date(lastRaw).getTime() : NaN;
+  if (Number.isFinite(lastMs) && Date.now() - lastMs < intervalH * 3600 * 1000) return null;
+  try {
+    return backupNow('auto').path;
+  } catch {
+    return null; // backupNow ya registró backup_last_error
+  }
+}
+
+export interface BackupFileInfo {
+  file: string;
+  size: number;
+  mtimeMs: number;
+}
+
+const BACKUP_FILE_RE = /^inventarioy-(backup|manual|auto|pre-restore)-.*\.db$/;
+
+// Lista copias disponibles en dataDir + carpeta configurada (sin duplicados).
+export function listBackups(): BackupFileInfo[] {
+  const dirs = new Set<string>();
+  if (dataDir) dirs.add(dataDir);
+  try { dirs.add(resolveBackupDir()); } catch { /* ignore */ }
+  const seen = new Set<string>();
+  const out: BackupFileInfo[] = [];
+  for (const dir of dirs) {
+    let files: string[] = [];
+    try { files = fs.readdirSync(dir); } catch { continue; }
+    for (const f of files) {
+      if (!BACKUP_FILE_RE.test(f) || seen.has(f)) continue;
+      seen.add(f);
+      try {
+        const st = fs.statSync(path.join(dir, f));
+        out.push({ file: f, size: st.size, mtimeMs: st.mtimeMs });
+      } catch { /* ignore */ }
+    }
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+export interface RestoreResult {
+  restoredFrom: string;
+  safetyCopy: string;
+  at: string;
+}
+
+// Restaura una copia: valida nombre (anti path-traversal), guarda copia de
+// seguridad del estado actual, reemplaza inventarioy.db y reabre la conexión.
+export function restoreDatabase(file: string): RestoreResult {
+  if (!dataDir) throw new Error('Base de datos no inicializada');
+  const base = path.basename(String(file || ''));
+  if (!BACKUP_FILE_RE.test(base)) throw new Error('Archivo de respaldo inválido');
+  const candidates = [path.join(resolveBackupDir(), base), path.join(dataDir, base)];
+  const src = candidates.find(p => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+  if (!src) throw new Error('Archivo de respaldo no encontrado');
+  const dbPath = path.join(dataDir, 'inventarioy.db');
+  // Copia de seguridad del estado actual antes de pisar.
+  const safety = path.join(dataDir, `inventarioy-pre-restore-${dbStamp()}.db`);
+  try { db?.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ok */ }
+  try { if (fs.existsSync(dbPath)) fs.copyFileSync(dbPath, safety); } catch { /* ignore */ }
+  try { db?.close(); } catch { /* ignore */ }
+  db = null;
+  try {
+    for (const suffix of ['-wal', '-shm']) {
+      try { fs.unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+    fs.copyFileSync(src, dbPath);
+    const d = new DatabaseSync(dbPath);
+    d.exec('PRAGMA journal_mode = WAL');
+    d.exec('PRAGMA foreign_keys = ON');
+    const check = d.prepare('PRAGMA integrity_check').get() as any;
+    const value = check && typeof check === 'object' ? check.integrity_check : check;
+    if (value !== 'ok') throw new Error('La copia está corrupta (integrity_check falló)');
+    db = d;
+  } catch (e: any) {
+    // Mejor esfuerzo: reabrir la BD original si el restore falló a medias.
+    try { db = new DatabaseSync(dbPath); } catch { /* ignore */ }
+    throw new Error(e?.message || 'No se pudo restaurar la copia');
+  }
+  const at = new Date().toISOString();
+  try { writeSetting(BACKUP_SETTING_KEYS.lastError, ''); } catch { /* ignore */ }
+  return { restoredFrom: base, safetyCopy: path.basename(safety), at };
 }
 
 export function initDatabase(dir?: string): DatabaseSync {

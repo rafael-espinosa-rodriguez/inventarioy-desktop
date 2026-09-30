@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('desktop', {
   isDesktop: true,
   platform: process.platform,
   print: (options?: { silent?: boolean }) => ipcRenderer.invoke('print', options),
+  selectFolder: () => ipcRenderer.invoke('select-folder'),
 });
