@@ -27,7 +27,7 @@ const FEATURES_16 = [
   'Módulo de Tránsito para movimientos internos',
   'Cierres de caja por turno con validación de cuadre',
   'Punto de venta: Salón, Domicilio, Bar y Venta rápida',
-  'Cobro mixto: efectivo CUP, transferencia, USD, EUR, Zelle',
+  'Cobro mixto: efectivo CUP, transferencia, USD, EUR',
   'Recetas con descuento automático de ingredientes',
   'Personal, roles por PIN y nómina cubana',
   'Biblioteca de documentos (PNO, Reglamento)',
@@ -584,7 +584,7 @@ export default function Landing() {
                   </div>
                   <h3 className="mb-3 text-xl font-bold text-text">Moneda nacional y cierre con validación</h3>
                   <p className="mb-6 text-sm leading-relaxed text-text-secondary">
-                    Cobra en efectivo CUP, transferencia, USD, EUR o Zelle con tasa
+                    Cobra en efectivo CUP, transferencia, USD o EUR con tasa
                     configurable. Al cerrar el turno, el sistema compara lo contado
                     contra lo esperado y muestra cualquier descuadre al instante.
                   </p>
