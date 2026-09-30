@@ -310,9 +310,9 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const LEGACY_ROLE_MODULES: Record<string, string[]> = {
-  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  admin: ['inventory', 'movements', 'transit'],
+  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'invoices'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'invoices'],
+  admin: ['inventory', 'movements', 'transit', 'invoices'],
   supervisor: ['sales', 'closings'],
   clerk: ['sales'],
 };
@@ -326,6 +326,7 @@ const MODULE_BY_PATH: Record<string, string> = {
   '/movements': 'movements',
   '/transit': 'transit',
   '/sales': 'sales',
+  '/invoices': 'invoices',
   '/closings': 'closings',
   '/hr': 'hr',
   '/recipes': 'recipes',
@@ -371,6 +372,9 @@ const TABLE_MODULES: Record<string, TableModuleRule> = {
   sale_items: 'sales',
   pending_accounts: 'sales',
   payments: 'sales',
+  // Facturación (spec 003): comprobantes con folio
+  invoices: 'invoices',
+  invoice_items: 'invoices',
   // products/movements/transit/product_warehouse son tablas operativas que
   // varias acciones escriben en conjunto (alta de producto, entrada/salida,
   // merma, devolución desde tránsito, consumo por venta). Se permite el módulo
@@ -1705,6 +1709,257 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       },
       error: null,
     };
+  });
+
+  // ---------- API: facturación (spec 003) ----------
+  // Comprobantes con folio secuencial anual. Sin red, sin dependencias nuevas.
+  function canInvoice(role: string | null): boolean {
+    if (!role) return false;
+    if (role === 'owner') return true;
+    return getRoleModules(role).includes('invoices');
+  }
+
+  function requireInvoiceRole(request: any, reply: any): string | null {
+    const role = getRequestRole(request);
+    if (!canInvoice(role)) {
+      reply.code(403).send({ data: null, error: { message: 'Tu rol no tiene permiso para facturar.', code: 'ROLE_FORBIDDEN' } });
+      return null;
+    }
+    return role;
+  }
+
+  function requireWritableLicense(reply: any): boolean {
+    if (isWriteBlockedByLicense()) {
+      reply.code(403).send({
+        data: null,
+        error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' },
+      });
+      return false;
+    }
+    return true;
+  }
+
+  function nextFolioSeq(year: number): number {
+    const row = getRaw<any>('SELECT COALESCE(MAX(folio_seq), 0) AS m FROM invoices WHERE user_id = ? AND folio_year = ?', ['owner', year]);
+    return (row?.m ?? 0) + 1;
+  }
+
+  const r2 = (n: any): number => {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0;
+  };
+
+  // Listado con filtros (año, mes, estado, texto). Sin ítems (se piden por /api/query).
+  app.get('/api/invoices', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    if (!requireInvoiceRole(request, reply)) return;
+    const q = (request.query || {}) as { year?: string; month?: string; status?: string; q?: string; limit?: string };
+    const conds: string[] = [`user_id = 'owner'`];
+    const params: any[] = [];
+    if (q.year) { conds.push(`folio_year = ?`); params.push(Number(q.year)); }
+    if (q.month) {
+      const m = String(q.month).padStart(2, '0');
+      conds.push(`substr(date, 1, 7) = ?`);
+      params.push(`${q.year || new Date().getFullYear()}-${m}`);
+    }
+    if (q.status === 'emitida' || q.status === 'anulada') { conds.push(`status = ?`); params.push(q.status); }
+    if (q.q && q.q.trim()) {
+      conds.push(`(client_name LIKE ? COLLATE NOCASE OR CAST(folio_seq AS TEXT) LIKE ?)`);
+      params.push(`%${q.q.trim()}%`, `%${q.q.trim()}%`);
+    }
+    const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 1000);
+    try {
+      const rows = queryRaw<any>(
+        `SELECT i.*, (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = i.id) AS items_count
+         FROM invoices i WHERE ${conds.join(' AND ')} ORDER BY folio_year DESC, folio_seq DESC LIMIT ${limit}`,
+        params
+      );
+      return { data: rows, error: null };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al listar facturas', code: 'INVOICE_ERROR' } });
+    }
+  });
+
+  // Crear comprobante manual (NO mueve inventario; se indica en UI).
+  app.post('/api/invoices', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    if (!requireInvoiceRole(request, reply)) return;
+    if (!requireWritableLicense(reply)) return;
+    const body = (request.body || {}) as any;
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) {
+      return reply.code(400).send({ data: null, error: { message: 'La factura necesita al menos una línea' } });
+    }
+    const cleanItems = items.map((it: any) => ({
+      description: String(it.description || '').trim().slice(0, 200),
+      quantity: Math.max(0, Number(it.quantity) || 0),
+      price: Math.max(0, Number(it.price) || 0),
+    })).filter((it: any) => it.description && it.quantity > 0);
+    if (!cleanItems.length) {
+      return reply.code(400).send({ data: null, error: { message: 'Líneas inválidas (descripción y cantidad > 0)' } });
+    }
+    const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : new Date().toISOString().split('T')[0];
+    const year = Number(dateStr.slice(0, 4));
+    const subtotal = r2(cleanItems.reduce((s: number, it: any) => s + it.quantity * it.price, 0));
+    const discount = Math.min(r2(body.discount), subtotal);
+    const taxRate = Math.max(0, Math.min(100, Number(body.tax_rate) || 0));
+    const taxAmount = r2((subtotal - discount) * taxRate / 100);
+    const total = r2(subtotal - discount + taxAmount);
+    try {
+      const created = transaction(() => {
+        const now = new Date().toISOString();
+        const seq = nextFolioSeq(year);
+        const id = crypto.randomUUID();
+        runRaw(
+          `INSERT INTO invoices (id, user_id, folio_year, folio_seq, client_name, sale_id, date, subtotal, discount, tax_rate, tax_amount, total, payment_method, efectivo, transferencia, usd, eur, status, notes, created_at)
+           VALUES (?, 'owner', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'emitida', ?, ?)`,
+          [id, year, seq, String(body.client_name || 'Cliente').trim().slice(0, 120) || 'Cliente', dateStr,
+           subtotal, discount, taxRate, taxAmount, total, body.payment_method || null,
+           r2(body.efectivo), r2(body.transferencia), r2(body.usd), r2(body.eur),
+           body.notes ? String(body.notes).slice(0, 500) : null, now]
+        );
+        for (const it of cleanItems) {
+          runRaw(
+            `INSERT INTO invoice_items (id, invoice_id, description, quantity, price, subtotal, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [crypto.randomUUID(), id, it.description, it.quantity, it.price, r2(it.quantity * it.price), now]
+          );
+        }
+        return getRaw<any>('SELECT * FROM invoices WHERE id = ?', [id]);
+      });
+      return { data: created, error: null };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'No se pudo crear la factura', code: 'INVOICE_ERROR' } });
+    }
+  });
+
+  // Crear comprobante desde una venta (replica ítems e importes exactos).
+  app.post('/api/invoices/from-sale', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    if (!requireInvoiceRole(request, reply)) return;
+    if (!requireWritableLicense(reply)) return;
+    const body = (request.body || {}) as { sale_id?: string; client_name?: string };
+    const saleId = String(body.sale_id || '').trim();
+    if (!saleId) {
+      return reply.code(400).send({ data: null, error: { message: 'Falta la venta' } });
+    }
+    try {
+      const created = transaction(() => {
+        const sale = getRaw<any>(`SELECT * FROM sales WHERE id = ? AND user_id = 'owner'`, [saleId]);
+        if (!sale) throw { code: 'NOT_FOUND', message: 'Venta no encontrada' };
+        const existing = getRaw<any>(`SELECT id FROM invoices WHERE sale_id = ? AND user_id = 'owner'`, [saleId]);
+        if (existing) throw { code: 'ALREADY_INVOICED', message: 'Esta venta ya tiene factura' };
+        const rows = queryRaw<any>(`SELECT * FROM sale_items WHERE sale_id = ?`, [saleId]);
+        if (!rows.length) throw { code: 'EMPTY_SALE', message: 'La venta no tiene ítems' };
+        const products = queryRaw<any>(`SELECT id, name FROM products WHERE user_id = 'owner'`);
+        const names = new Map(products.map((p: any) => [p.id, p.name]));
+        const now = new Date().toISOString();
+        const dateStr = String(sale.date || now).slice(0, 10);
+        const year = Number(dateStr.slice(0, 4)) || new Date().getFullYear();
+        const subtotal = r2(sale.subtotal ?? sale.total_amount);
+        const discount = Math.min(r2(sale.discount), subtotal);
+        const total = r2(sale.total_amount);
+        const seq = nextFolioSeq(year);
+        const id = crypto.randomUUID();
+        runRaw(
+          `INSERT INTO invoices (id, user_id, folio_year, folio_seq, client_name, sale_id, date, subtotal, discount, tax_rate, tax_amount, total, payment_method, efectivo, transferencia, usd, eur, status, notes, created_at)
+           VALUES (?, 'owner', ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, 'emitida', ?, ?)`,
+          [id, year, seq, String(body.client_name || 'Cliente').trim().slice(0, 120) || 'Cliente', saleId, dateStr,
+           subtotal, discount, total, sale.payment_method || null,
+           r2(sale.efectivo), r2(sale.transferencia), r2(sale.usd), r2(sale.eur),
+           sale.notes ? String(sale.notes).slice(0, 500) : null, now]
+        );
+        for (const si of rows) {
+          let desc = names.get(si.product_id) || 'Producto';
+          if (si.is_recipe) {
+            try {
+              const snap = JSON.parse(si.recipe_snapshot || '{}');
+              if (snap?.name) desc = snap.name;
+            } catch { /* usa el nombre del producto */ }
+          }
+          runRaw(
+            `INSERT INTO invoice_items (id, invoice_id, description, quantity, price, subtotal, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [crypto.randomUUID(), id, String(desc).slice(0, 200), Number(si.quantity) || 0, Number(si.selling_price) || 0, Number(si.subtotal) || 0, now]
+          );
+        }
+        return getRaw<any>('SELECT * FROM invoices WHERE id = ?', [id]);
+      });
+      return { data: created, error: null };
+    } catch (e: any) {
+      const code = e?.code === 'ALREADY_INVOICED' || e?.code === 'NOT_FOUND' || e?.code === 'EMPTY_SALE' ? 400 : 500;
+      return reply.code(code).send({ data: null, error: { message: e?.message || 'No se pudo facturar la venta', code: e?.code || 'INVOICE_ERROR' } });
+    }
+  });
+
+  // Anular (con motivo + auditoría; no borra la fila).
+  app.post('/api/invoices/:id/void', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    const role = requireInvoiceRole(request, reply);
+    if (!role) return;
+    if (!requireWritableLicense(reply)) return;
+    const id = String((request.params as any)?.id || '').trim();
+    const reason = String(((request.body || {}) as any)?.reason || '').trim().slice(0, 300);
+    if (!reason) {
+      return reply.code(400).send({ data: null, error: { message: 'Indica el motivo de anulación' } });
+    }
+    try {
+      const updated = transaction(() => {
+        const inv = getRaw<any>(`SELECT * FROM invoices WHERE id = ? AND user_id = 'owner'`, [id]);
+        if (!inv) throw { code: 'NOT_FOUND', message: 'Factura no encontrada' };
+        if (inv.status === 'anulada') throw { code: 'ALREADY_VOID', message: 'La factura ya está anulada' };
+        runRaw(`UPDATE invoices SET status = 'anulada', void_reason = ? WHERE id = ?`, [reason, id]);
+        runRaw(
+          `INSERT INTO action_logs (id, user_id, role, module, action, details, created_at)
+           VALUES (?, 'owner', ?, 'invoices', 'void_invoice', ?, ?)`,
+          [crypto.randomUUID(), role, JSON.stringify({ invoice_id: id, folio_year: inv.folio_year, folio_seq: inv.folio_seq, reason }), new Date().toISOString()]
+        );
+        return getRaw<any>('SELECT * FROM invoices WHERE id = ?', [id]);
+      });
+      return { data: updated, error: null };
+    } catch (e: any) {
+      const code = e?.code === 'NOT_FOUND' || e?.code === 'ALREADY_VOID' ? 400 : 500;
+      return reply.code(code).send({ data: null, error: { message: e?.message || 'No se pudo anular la factura', code: e?.code || 'INVOICE_ERROR' } });
+    }
+  });
+
+  // Resumen mensual para ONAT (solo emitidas).
+  app.get('/api/invoices/report', async (request, reply) => {
+    if (!requireToken(request, reply)) return;
+    if (!requireInvoiceRole(request, reply)) return;
+    const q = (request.query || {}) as { year?: string; month?: string };
+    const year = Number(q.year) || new Date().getFullYear();
+    const month = String(q.month || '').padStart(2, '0');
+    if (!/^(0[1-9]|1[0-2])$/.test(month)) {
+      return reply.code(400).send({ data: null, error: { message: 'Mes inválido (01-12)' } });
+    }
+    try {
+      const prefix = `${year}-${month}`;
+      const rows = queryRaw<any>(
+        `SELECT * FROM invoices WHERE user_id = 'owner' AND status = 'emitida' AND substr(date, 1, 7) = ?
+         ORDER BY folio_seq ASC`,
+        [prefix]
+      );
+      const sum = (k: string) => r2(rows.reduce((s: number, r: any) => s + (Number(r[k]) || 0), 0));
+      return {
+        data: {
+          year, month,
+          count: rows.length,
+          subtotal: sum('subtotal'),
+          discount: sum('discount'),
+          tax: sum('tax_amount'),
+          total: sum('total'),
+          efectivo: sum('efectivo'),
+          transferencia: sum('transferencia'),
+          usd: sum('usd'),
+          eur: sum('eur'),
+          rows,
+        },
+        error: null,
+      };
+    } catch (e: any) {
+      return reply.code(500).send({ data: null, error: { message: e?.message || 'Error en el reporte', code: 'INVOICE_ERROR' } });
+    }
   });
 
   // ---------- API: respaldos (spec 002) ----------

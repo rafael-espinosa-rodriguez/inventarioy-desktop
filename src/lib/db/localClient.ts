@@ -535,6 +535,49 @@ export const localDb = {
       return postJson('/api/backup/restore', { file });
     },
   },
+  // Facturación con folio anual (spec 003).
+  invoice: {
+    list: async (filters?: { year?: number; month?: string; status?: string; q?: string; limit?: number }): Promise<LocalResponse> => {
+      const params = new URLSearchParams();
+      if (filters?.year) params.set('year', String(filters.year));
+      if (filters?.month) params.set('month', filters.month);
+      if (filters?.status) params.set('status', filters.status);
+      if (filters?.q) params.set('q', filters.q);
+      if (filters?.limit) params.set('limit', String(filters.limit));
+      const qs = params.toString();
+      let res: Response;
+      try {
+        res = await fetch(`/api/invoices${qs ? `?${qs}` : ''}`, { method: 'GET' });
+      } catch (e: any) {
+        return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
+      }
+      let parsed: any = {};
+      try { parsed = await res.json(); } catch { /* ignore */ }
+      if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
+      return { data: parsed?.data ?? null, error: parsed?.error || null };
+    },
+    create: async (payload: any): Promise<LocalResponse> => {
+      return postJson('/api/invoices', payload);
+    },
+    fromSale: async (sale_id: string, client_name?: string): Promise<LocalResponse> => {
+      return postJson('/api/invoices/from-sale', { sale_id, client_name });
+    },
+    void: async (id: string, reason: string): Promise<LocalResponse> => {
+      return postJson(`/api/invoices/${encodeURIComponent(id)}/void`, { reason });
+    },
+    report: async (year: number, month: string): Promise<LocalResponse> => {
+      let res: Response;
+      try {
+        res = await fetch(`/api/invoices/report?year=${year}&month=${encodeURIComponent(month)}`, { method: 'GET' });
+      } catch (e: any) {
+        return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
+      }
+      let parsed: any = {};
+      try { parsed = await res.json(); } catch { /* ignore */ }
+      if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
+      return { data: parsed?.data ?? null, error: parsed?.error || null };
+    },
+  },
   // Ejecuta varias escrituras en una única transacción (rollback atómico).
   batch: async (commands: { table: string; method: 'insert' | 'upsert' | 'update' | 'delete'; data?: any; filters?: LocalFilter[]; onConflict?: string }[]): Promise<LocalResponse<{ success: boolean }>> => {
     return postJson('/api/query/batch', { commands });

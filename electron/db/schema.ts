@@ -690,6 +690,65 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     CREATE INDEX IF NOT EXISTS idx_closings_user ON daily_closings (user_id);
     `,
   },
+  {
+    version: 14,
+    description: 'Facturación (spec 003): comprobantes con folio anual + líneas',
+    sql: `
+    CREATE TABLE IF NOT EXISTS invoices (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      folio_year INTEGER NOT NULL,
+      folio_seq INTEGER NOT NULL,
+      client_name TEXT NOT NULL DEFAULT 'Cliente',
+      sale_id TEXT,
+      date TEXT NOT NULL,
+      subtotal REAL DEFAULT 0,
+      discount REAL DEFAULT 0,
+      tax_rate REAL DEFAULT 0,
+      tax_amount REAL DEFAULT 0,
+      total REAL NOT NULL DEFAULT 0,
+      payment_method TEXT,
+      efectivo REAL DEFAULT 0,
+      transferencia REAL DEFAULT 0,
+      usd REAL DEFAULT 0,
+      eur REAL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'emitida',
+      void_reason TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (user_id, folio_year, folio_seq)
+    );
+    CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices (user_id);
+    CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices (date);
+    CREATE INDEX IF NOT EXISTS idx_invoices_sale ON invoices (sale_id);
+
+    CREATE TABLE IF NOT EXISTS invoice_items (
+      id TEXT PRIMARY KEY,
+      invoice_id TEXT NOT NULL,
+      description TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      price REAL NOT NULL DEFAULT 0,
+      subtotal REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items (invoice_id);
+    `,
+  },
+  {
+    version: 15,
+    description: 'Facturación (spec 003): módulo invoices en roles dueño/económico/admin',
+    sql: `
+    -- Agrega el módulo 'invoices' a los roles que facturan (dueño, económico,
+    -- admin). UNION evita duplicados; json_valid protege filas con JSON roto.
+    UPDATE roles SET modules = (
+      SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(roles.modules)
+        UNION SELECT 'invoices'
+      )
+    ), updated_at = datetime('now')
+    WHERE id IN ('owner', 'economist', 'admin') AND json_valid(modules);
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {

@@ -90,6 +90,8 @@ export default function SalesView() {
   const [showClosingModal, setShowClosingModal] = useState(false);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketData, setTicketData] = useState<any>(null);
+  // Id de la última venta registrada (spec 003: botón Facturar en el ticket).
+  const [lastSaleId, setLastSaleId] = useState<string | null>(null);
   const [isAccountHouse, setIsAccountHouse] = useState(false);
   const [deliveryFee, setDeliveryFee] = useState(0);
   const [selectedPendingAccount, setSelectedPendingAccount] = useState<string>('');
@@ -784,9 +786,11 @@ export default function SalesView() {
         setShowPreview(false);
         setPaymentError(null);
         setPaymentWarning(null);
+        setLastSaleId(null);
         toast.error(result.error || 'No se pudo completar la venta');
         return;
       }
+      setLastSaleId(result.saleId || null);
 
       // Capturar items del cart antes de limpiar
       const cartItems = cart.map(item => ({
@@ -1921,7 +1925,8 @@ setShowTicket(true);
       {showTicket && ticketData && (
         <TicketView
           ticketData={ticketData}
-          onClose={() => setShowTicket(false)}
+          onClose={() => { setShowTicket(false); setLastSaleId(null); }}
+          saleId={lastSaleId}
         />
       )}
 

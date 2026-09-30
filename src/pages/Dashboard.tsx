@@ -24,7 +24,8 @@ import {
   Crown,
   WifiOff,
   KeyRound,
-  Store
+  Store,
+  ReceiptText
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useDatabaseStore, MODULE_BY_PATH, getRoleModules, getRoleLabel } from '../store/dbStore';
@@ -50,6 +51,7 @@ const SettingsView = lazy(() => import('./dashboard/SettingsView'));
 const LicenseView = lazy(() => import('./dashboard/LicenseView'));
 const ActionLogsView = lazy(() => import('./dashboard/ActionLogsView'));
 const DailyClosingsView = lazy(() => import('./dashboard/DailyClosingsView'));
+const InvoicesView = lazy(() => import('./dashboard/InvoicesView'));
 import { TableSkeleton } from '../components/Skeleton';
 
 export default function Dashboard() {
@@ -120,6 +122,7 @@ export default function Dashboard() {
     { name: 'Tránsito', href: '/dashboard/transit', icon: ArrowRightLeft },
     // VENTAS
     { name: 'Ventas', href: '/dashboard/sales', icon: ShoppingCart },
+    { name: 'Facturación', href: '/dashboard/invoices', icon: ReceiptText },
     { name: 'Cierres de Caja', href: '/dashboard/closings', icon: DollarSign },
     // PRODUCCIÓN
     { name: 'Recetas', href: '/dashboard/recipes', icon: ChefHat },
@@ -542,6 +545,7 @@ export default function Dashboard() {
                 <Route path="/movements" element={<MovementsView />} />
                 <Route path="/transit" element={<TransitView />} />
                 <Route path="/sales" element={<SalesView />} />
+                <Route path="/invoices" element={<InvoicesView />} />
                 <Route path="/closings" element={<DailyClosingsView />} />
                 <Route path="/hr" element={<HRView />} />
                 <Route path="/recipes" element={<RecipesView />} />

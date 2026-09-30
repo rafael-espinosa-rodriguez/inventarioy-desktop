@@ -218,9 +218,9 @@ export const ROLE_LABELS: Record<string, string> = {
 };
 
 export const ROLE_MODULES: Record<string, string[]> = {
-  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr'],
-  admin: ['inventory', 'movements', 'transit'],
+  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'invoices'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'invoices'],
+  admin: ['inventory', 'movements', 'transit', 'invoices'],
   supervisor: ['sales', 'closings'],
   clerk: ['sales'],
 };
@@ -240,6 +240,7 @@ export const MODULE_ROLES: Record<string, string[]> = {
   '/filtered': ['owner', 'economist'],
   '/settings': ['owner'],
   '/action-logs': ['owner', 'economist'],
+  '/invoices': ['owner', 'economist', 'admin'],
 };
 
 // Módulo requerido por ruta de dashboard (verificación offline / gating).
@@ -257,6 +258,7 @@ export const MODULE_BY_PATH: Record<string, string> = {
   '/filtered': 'filtered',
   '/settings': 'settings',
   '/action-logs': 'hr',
+  '/invoices': 'invoices',
 };
 
 function normalizeRoleModules(modules: any): string[] {
@@ -336,6 +338,47 @@ export interface DailyClosing {
   sales_count?: number;
   register_id?: string | null;
   shift?: string;
+}
+
+// Facturación con folio anual (spec 003). Display: `CR-AAAA-NNNNNN`.
+export interface Invoice {
+  id: string;
+  user_id: string;
+  folio_year: number;
+  folio_seq: number;
+  client_name: string;
+  sale_id?: string | null;
+  date: string;
+  subtotal: number;
+  discount: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  payment_method?: string | null;
+  efectivo: number;
+  transferencia: number;
+  usd: number;
+  eur: number;
+  status: 'emitida' | 'anulada';
+  void_reason?: string | null;
+  notes?: string | null;
+  created_at: string;
+  items_count?: number;
+  items?: InvoiceItem[];
+}
+
+export interface InvoiceItem {
+  id: string;
+  invoice_id: string;
+  description: string;
+  quantity: number;
+  price: number;
+  subtotal: number;
+  created_at: string;
+}
+
+export function folioLabel(inv: Pick<Invoice, 'folio_year' | 'folio_seq'>): string {
+  return `CR-${inv.folio_year}-${String(inv.folio_seq).padStart(6, '0')}`;
 }
 
 export interface HRDocument {
@@ -624,6 +667,7 @@ interface DatabaseState {
   categories: Category[];
   transitItems: TransitItem[];
   dailyClosings: DailyClosing[];
+  invoices: Invoice[];
   hrDocuments: HRDocument[];
   employeeDocuments: EmployeeDocument[];
   departments: Department[];
@@ -667,7 +711,7 @@ interface DatabaseState {
   registerWasteFromTransit: (transitItemId: string, quantity: number, reason: string) => Promise<{ success: boolean; error?: string }>;
   registerManualConsumption: (transitItemId: string, quantity: number, note?: string) => Promise<{ success: boolean; error?: string }>;
 
-  addSale: (sale: Omit<Sale, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
+  addSale: (sale: Omit<Sale, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; saleId?: string; error?: string }>;
 
   addRecipe: (recipe: Omit<Recipe, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   updateRecipe: (id: string, updates: Partial<Recipe>) => Promise<void>;
@@ -683,6 +727,12 @@ interface DatabaseState {
   recalculateStock: () => Promise<void>;
   createDailyClosing: (closing: Omit<DailyClosing, 'id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
   getDailyClosings: () => Promise<void>;
+  fetchInvoices: (filters?: { year?: number; month?: string; status?: string; q?: string }) => Promise<void>;
+  fetchInvoiceItems: (invoiceId: string) => Promise<InvoiceItem[]>;
+  createInvoiceManual: (payload: { client_name: string; date?: string; items: { description: string; quantity: number; price: number }[]; discount?: number; tax_rate?: number; payment_method?: string | null; efectivo?: number; transferencia?: number; usd?: number; eur?: number; notes?: string }) => Promise<{ success: boolean; invoice?: Invoice; error?: string }>;
+  createInvoiceFromSale: (saleId: string, clientName?: string) => Promise<{ success: boolean; invoice?: Invoice; error?: string }>;
+  voidInvoice: (id: string, reason: string) => Promise<{ success: boolean; error?: string }>;
+  invoiceReport: (year: number, month: string) => Promise<any>;
 
   uploadHRDocument: (file: File, docType: 'MANUAL' | 'REGLAMENTO' | 'PNO') => Promise<{ success: boolean; error?: string }>;
   fetchHRDocuments: () => Promise<void>;
@@ -773,6 +823,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   categories: [],
   transitItems: [],
   dailyClosings: [],
+  invoices: [],
   hrDocuments: [],
   employeeDocuments: [],
   departments: [],
@@ -827,7 +878,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
     const user = useAuthStore.getState().user;
     if (!user) {
-      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollDrafts: [], payrollPeriod: null, payrollLiquidations: [], pendingAccounts: [], accessPins: [], roles: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
+      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], invoices: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollDrafts: [], payrollPeriod: null, payrollLiquidations: [], pendingAccounts: [], accessPins: [], roles: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
       _isFetchingAll = false;
       return;
     }
@@ -2004,7 +2055,7 @@ addProduct: async (product) => {
 
 
       toast.success('Venta guardada localmente (sin conexión)');
-      return { success: true };
+      return { success: true, saleId: tempId };
     }
 
 const saleId = uuid();
@@ -2032,7 +2083,7 @@ const saleId = uuid();
       // tránsito y movimientos los actualiza el servidor; aquí se re-sincronizan).
       get().forceRefreshData().catch(() => {});
 
-      return { success: true };
+      return { success: true, saleId: (data as any)?.sale?.id || saleId };
     } catch (error: any) {
       logger.error('Error en addSale:', error);
       return { success: false, error: error.message || 'Error al registrar la venta' };
@@ -4648,6 +4699,100 @@ createDailyClosing: async (closing) => {
     } catch (error: any) {
       logger.error('Error en createDailyClosing:', error);
       return { success: false, error: error.message || 'Error al registrar cierre de caja' };
+    }
+  },
+
+  fetchInvoices: async (filters) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    try {
+      const { data, error } = await localDb.invoice.list(filters || {});
+      if (error) throw new Error(error.message || 'No se pudieron cargar las facturas');
+      set({ invoices: Array.isArray(data) ? data : [] });
+    } catch (error: any) {
+      logger.error('Error en fetchInvoices:', error);
+      throw new Error(error.message || 'No se pudieron cargar las facturas');
+    }
+  },
+
+  fetchInvoiceItems: async (invoiceId) => {
+    try {
+      const { data, error } = await queryWithRetry(() =>
+        localDb.from('invoice_items').select('*').eq('invoice_id', invoiceId)
+      );
+      if (error) throw new Error(error.message || 'No se pudieron cargar las líneas');
+      const items = Array.isArray(data) ? data : [];
+      set((state) => ({
+        invoices: state.invoices.map((inv) => (inv.id === invoiceId ? { ...inv, items } : inv)),
+      }));
+      return items;
+    } catch (error: any) {
+      logger.error('Error en fetchInvoiceItems:', error);
+      throw new Error(error.message || 'No se pudieron cargar las líneas');
+    }
+  },
+
+  createInvoiceManual: async (payload) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No autenticado' };
+    try {
+      const { data, error } = await localDb.invoice.create(payload);
+      if (error || !data) {
+        logger.error('Error en createInvoiceManual:', error);
+        return { success: false, error: error?.message || 'No se pudo crear la factura' };
+      }
+      set((state) => ({ invoices: [data as Invoice, ...state.invoices] }));
+      return { success: true, invoice: data as Invoice };
+    } catch (error: any) {
+      logger.error('Error en createInvoiceManual:', error);
+      return { success: false, error: error.message || 'No se pudo crear la factura' };
+    }
+  },
+
+  createInvoiceFromSale: async (saleId, clientName) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No autenticado' };
+    try {
+      const { data, error } = await localDb.invoice.fromSale(saleId, clientName);
+      if (error || !data) {
+        logger.error('Error en createInvoiceFromSale:', error);
+        return { success: false, error: error?.message || 'No se pudo facturar la venta' };
+      }
+      set((state) => ({ invoices: [data as Invoice, ...state.invoices] }));
+      return { success: true, invoice: data as Invoice };
+    } catch (error: any) {
+      logger.error('Error en createInvoiceFromSale:', error);
+      return { success: false, error: error.message || 'No se pudo facturar la venta' };
+    }
+  },
+
+  voidInvoice: async (id, reason) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No autenticado' };
+    try {
+      const { data, error } = await localDb.invoice.void(id, reason);
+      if (error || !data) {
+        logger.error('Error en voidInvoice:', error);
+        return { success: false, error: error?.message || 'No se pudo anular la factura' };
+      }
+      set((state) => ({
+        invoices: state.invoices.map((inv) => (inv.id === id ? (data as Invoice) : inv)),
+      }));
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en voidInvoice:', error);
+      return { success: false, error: error.message || 'No se pudo anular la factura' };
+    }
+  },
+
+  invoiceReport: async (year, month) => {
+    try {
+      const { data, error } = await localDb.invoice.report(year, month);
+      if (error) throw new Error(error.message || 'No se pudo generar el reporte');
+      return data;
+    } catch (error: any) {
+      logger.error('Error en invoiceReport:', error);
+      throw new Error(error.message || 'No se pudo generar el reporte');
     }
   },
 
