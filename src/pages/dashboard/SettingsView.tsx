@@ -1000,7 +1000,7 @@ export default function SettingsView() {
           <div className="flex flex-wrap gap-2 mb-4">
             <Button onClick={handleSaveBackupSettings} className="gap-2">
               <Save className="h-4 w-4" />
-              Guardar configuración
+              Aplicar respaldo
             </Button>
             <Button variant="outline" onClick={handleBackupNow} disabled={backupBusy} className="gap-2">
               <Download className="h-4 w-4" />
@@ -1097,7 +1097,7 @@ export default function SettingsView() {
               </div>
               <Button onClick={handleSaveAlertSettings} className="gap-2">
                 <Save className="h-4 w-4" />
-                Guardar alertas
+                Aplicar alertas
               </Button>
             </>
           )}

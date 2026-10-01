@@ -22,3 +22,7 @@ Plantillas: `_templates/`. Comandos: `/spec`, `/plan`, `/implement`.
 - Criterios de aceptación medibles o no existen.
 - Respetar anti-patrones de `AGENTS.md` (cero red, licencia, migraciones con cuidado).
 - Commits en español, conventional commits (`feat:`, `fix:`, …).
+- **Cierre con tests**: ningún spec M/L se cierra sin (1) test Playwright commiteado
+  que cubra sus CA (`tests/<spec>.spec.ts`, reutilizando `start-test-server.mjs`),
+  (2) `lint` + `build` verdes y (3) suite existente sin regresiones nuevas
+  (toda regresión se corrige o se demuestra preexistente antes del commit).

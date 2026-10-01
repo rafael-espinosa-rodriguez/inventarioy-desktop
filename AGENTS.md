@@ -80,6 +80,7 @@ Usar grep/búsqueda por nombre de interfaz (`Product`, `Sale`, `Recipe`...) o m�
 - Specs en `docs/specs/NNN-nombre/` (`spec.md` → `plan.md` → `tasks.md`). Flujo y niveles en `docs/specs/README.md`; plantillas en `docs/specs/_templates/`.
 - **S / quick-win (<1 día)**: mini-spec en `T0` de `tasks.md`. Sin spec/plan separados.
 - **M / L**: spec + plan + tasks aprobados antes de tocar código. Sin verde (`lint` + `build`, + e2e si aplica) no se cierra el spec.
+- **Cierre con tests**: todo spec M/L exige test Playwright commiteado (`tests/<spec>.spec.ts`) + suite existente sin regresiones nuevas.
 - Comandos: `/spec`, `/plan`, `/implement` (ver `.opencode/commands/`).
 - Leer `AGENTS.md` + `ARCHITECTURE.md` antes de redactar cualquier spec (son la constitución).
 
