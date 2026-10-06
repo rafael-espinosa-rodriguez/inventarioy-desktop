@@ -148,6 +148,30 @@ async function ensureToken(): Promise<string> {
   return tokenPromise;
 }
 
+function authHeaders(token: string): Record<string, string> {
+  const role = getCurrentRole();
+  const sessionToken = getStoredSessionToken();
+  return {
+    ...(token ? { 'x-inventarioy-token': token } : {}),
+    ...(role ? { 'x-inventarioy-role': role } : {}),
+    ...(sessionToken ? { 'x-inventarioy-session': sessionToken } : {}),
+  };
+}
+
+async function getJson<T = any>(url: string): Promise<LocalResponse<T>> {
+  const token = await ensureToken();
+  let res: Response;
+  try {
+    res = await fetch(url, { method: 'GET', headers: authHeaders(token) });
+  } catch (e: any) {
+    return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
+  }
+  let parsed: any = {};
+  try { parsed = await res.json(); } catch { /* ignore */ }
+  if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
+  return { data: parsed?.data ?? null, error: parsed?.error || null };
+}
+
 async function postJson<T = any>(url: string, body: any, signal?: AbortSignal): Promise<LocalResponse<T>> {
   const token = await ensureToken();
   const role = getCurrentRole();
@@ -545,16 +569,7 @@ export const localDb = {
       if (filters?.q) params.set('q', filters.q);
       if (filters?.limit) params.set('limit', String(filters.limit));
       const qs = params.toString();
-      let res: Response;
-      try {
-        res = await fetch(`/api/invoices${qs ? `?${qs}` : ''}`, { method: 'GET' });
-      } catch (e: any) {
-        return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
-      }
-      let parsed: any = {};
-      try { parsed = await res.json(); } catch { /* ignore */ }
-      if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
-      return { data: parsed?.data ?? null, error: parsed?.error || null };
+      return getJson(`/api/invoices${qs ? `?${qs}` : ''}`);
     },
     create: async (payload: any): Promise<LocalResponse> => {
       return postJson('/api/invoices', payload);
@@ -566,16 +581,7 @@ export const localDb = {
       return postJson(`/api/invoices/${encodeURIComponent(id)}/void`, { reason });
     },
     report: async (year: number, month: string): Promise<LocalResponse> => {
-      let res: Response;
-      try {
-        res = await fetch(`/api/invoices/report?year=${year}&month=${encodeURIComponent(month)}`, { method: 'GET' });
-      } catch (e: any) {
-        return { data: null, error: { message: e?.message || 'Error de red', status: 503 } };
-      }
-      let parsed: any = {};
-      try { parsed = await res.json(); } catch { /* ignore */ }
-      if (!res.ok) return { data: null, error: parsed?.error || { message: `Error ${res.status}`, status: res.status } };
-      return { data: parsed?.data ?? null, error: parsed?.error || null };
+      return getJson(`/api/invoices/report?year=${year}&month=${encodeURIComponent(month)}`);
     },
   },
   // Alertas locales (spec 006).
