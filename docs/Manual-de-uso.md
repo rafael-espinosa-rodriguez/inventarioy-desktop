@@ -50,8 +50,13 @@ La aplicación funciona en modo de **prueba gratis por 7 días**. Pasado ese tie
 **Estados posibles de la licencia:**
 
 - **Prueba Gratis:** los primeros 7 días.
-- **Activa:** licencia vigente (suscripción mensual o vitalicia).
+- **Activa:** licencia vigente (suscripción mensual, anual o vitalicia).
 - **Vencida:** la aplicación deja de permitir ventas y movimientos hasta que se renueve (los datos no se pierden).
+
+**Si la activación es rechazada:**
+
+- **"La clave no corresponde a este negocio":** verifique que el Código de Negocio en pantalla sea el suyo y que la clave sea la emitida para ese código.
+- **"La clave ya está vencida":** solicite una clave nueva al vendedor; las claves con fecha pasada no se activan.
 
 La licencia está ligada a su **Código de Negocio**, no a la computadora. Eso permite cambiarse de equipo sin perder la licencia (ver punto 7).
 
@@ -100,7 +105,23 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 - Las ventas se clasifican automáticamente en el turno que corresponda según la hora en que se realizan; no hace falta seleccionar el turno al vender.
 - En **Cierres de Caja** podrá cerrar cada turno por separado y consultar el desglose de cada uno.
 
-## 11. Soporte y actualizaciones
+## 11. Facturación (comprobantes para la ONAT)
+
+La sección **Facturación** emite comprobantes con **folio** en formato `CR-AAAA-NNNNNN`: año más número secuencial del año (la numeración se reinicia cada enero). Todo funciona sin internet. Está visible para los roles Dueño/a, Económico/a y Administrador.
+
+**Facturar una venta:** después de registrarla, pulse **Facturar** en el comprobante. La factura copia los productos y los importes exactos de la venta (incluido el desglose del pago: efectivo, transferencia, USD, EUR). Cada venta se factura una sola vez.
+
+**Factura manual:** pulse **Nueva factura** e indique cliente, fecha, líneas, descuento e impuesto. Tenga en cuenta que la factura manual **no descuenta inventario**: para vender con descuento de existencias, facture desde la venta.
+
+**Facturar una venta anterior:** pulse **Desde venta**, elija la venta en la lista, indique el cliente y pulse **Crear comprobante**.
+
+**Anular una factura:** pulse **Anular** y escriba el **motivo** (obligatorio). La factura queda marcada como **Anulada**: no se borra, queda registrada en auditoría y no aparece en el reporte mensual.
+
+**Imprimir:** cada factura puede imprimirse en formato **térmico** (58/80 mm) o en **hoja A5**, con los datos del negocio, el cliente, el folio y los totales.
+
+**Reporte mensual para la ONAT:** filtre por año, mes, estado o cliente y pulse **Reporte ONAT del mes (Excel)**. El archivo incluye folio, fecha, cliente, subtotal, descuento, impuesto, total y desglose de pago, solo de facturas emitidas.
+
+## 12. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).
 - **Actualizaciones:** la licencia **vitalicia** incluye actualizaciones de la aplicación. Las suscripciones mensuales incluyen actualizaciones mientras estén vigentes.
