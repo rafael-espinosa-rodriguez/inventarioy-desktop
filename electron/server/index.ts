@@ -1512,7 +1512,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (!session) {
       return reply.code(400).send({ data: null, error: { message: 'Primero configure el negocio' } });
     }
-    const expectedCode = session.business_code || '';
+    // Compatibilidad: negocios cuyo código quedó en minúsculas por versiones
+    // anteriores (Ajustes lo guardaba con toLowerCase). El canon es MAYÚSCULAS.
+    const expectedCode = String(session.business_code || '').toUpperCase();
     const result = verifyLicenseKey(String(key), expectedCode);
     if (!result.ok || !result.validUntil) {
       return reply.code(400).send({ data: null, error: { message: result.error || 'Clave inválida' } });

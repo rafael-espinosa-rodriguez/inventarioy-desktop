@@ -29,7 +29,7 @@ export default function AccessPage() {
       const { data: profiles, error } = (await localDb
         .from('user_session')
         .select('name, businessName')
-        .eq('business_code', code.toLowerCase().trim())
+        .eq('business_code', code.toUpperCase().trim())
         .limit(1)) as any;
 
       if (error) throw error;
@@ -82,7 +82,7 @@ export default function AccessPage() {
       }
 
       localStorage.setItem('temp_access', JSON.stringify({
-        businessCode: code.toLowerCase().trim(),
+        businessCode: code.toUpperCase().trim(),
         role: data.role,
         pinName: data.pin_name || '',
         accessTime: Date.now()

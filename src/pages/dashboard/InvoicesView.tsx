@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { ReceiptText, Plus, Search, Printer, Download, X, Ban, ShoppingCart, FileSpreadsheet } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -270,8 +270,8 @@ export default function InvoicesView() {
           </thead>
           <tbody>
             {invoices.map((inv) => (
-              <>
-                <tr key={inv.id} className="border-b border-border/30 hover:bg-surface-hover/50">
+              <Fragment key={inv.id}>
+                <tr className="border-b border-border/30 hover:bg-surface-hover/50">
                   <td className="px-3 py-2 font-mono text-primary">{folioLabel(inv)}</td>
                   <td className="px-3 py-2 text-text-secondary">{inv.date}</td>
                   <td className="px-3 py-2 text-text">{inv.client_name}</td>
@@ -321,7 +321,7 @@ export default function InvoicesView() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))}
             {invoices.length === 0 && !loading && (
               <tr>

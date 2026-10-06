@@ -377,7 +377,7 @@ export default function SettingsView() {
         phone: formData.phone,
         address: formData.address,
         businessHours: formData.businessHours,
-        business_code: formData.businessCode.toLowerCase().trim(),
+        business_code: formData.businessCode.toUpperCase().trim(),
         usdEnabled: currencySettings.usdEnabled ? 1 : 0,
         usdRate: currencySettings.usdRate,
         eurEnabled: currencySettings.eurEnabled ? 1 : 0,
@@ -620,7 +620,7 @@ export default function SettingsView() {
                 <Input 
                   id="businessCode" 
                   value={formData.businessCode}
-                  onChange={e => setFormData(prev => ({...prev, businessCode: e.target.value.toLowerCase().trim()}))}
+                  onChange={e => setFormData(prev => ({...prev, businessCode: e.target.value.toUpperCase().trim()}))}
                   placeholder="micafe"
                   maxLength={30}
                   className="h-9"
