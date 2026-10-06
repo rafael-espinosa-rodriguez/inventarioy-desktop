@@ -707,6 +707,50 @@ test('Flujo completo GUIA_PRUEBA (7 días restaurante + bodega)', async ({ page 
 
   // ---- FASE 0: Registro (setup de negocio) ----
   await test.step('Registro y setup del negocio', async () => {
+    // Pre-vuelo anti-reúso: la prueba exige la BD temporal pristine que crea
+    // scripts/start-test-server.mjs. Con reuseExistingServer, un servidor
+    // :4173 superviviente de una corrida anterior conserva sus datos (el
+    // setup responde 400 'ya está configurado' y el flujo falla de forma
+    // determinista más adelante, p. ej. a mitad del Día 1). Se detectan
+    // residuos propios de esta prueba (nombres que ningún otro spec crea)
+    // y se falla aquí con mensaje accionable.
+    {
+      const api = 'http://127.0.0.1:4173';
+      const loginRes = await page.request.post(`${api}/api/auth/login`, {
+        data: { pin: '1234' },
+        headers: { 'Content-Type': 'application/json', Origin: api },
+      });
+      const loginJson = await loginRes.json().catch(() => ({} as any));
+      const token = loginJson?.data?.token as string | undefined;
+      const sess = loginJson?.data?.sessionToken as string | undefined;
+      if (token && sess) {
+        const q = async (table: string, column: string, value: string) => {
+          const r = await page.request.post(`${api}/api/query`, {
+            data: { table, method: 'select', filters: [{ op: 'eq', column, value }] },
+            headers: {
+              'Content-Type': 'application/json',
+              Origin: api,
+              'x-inventarioy-token': token,
+              'x-inventarioy-session': sess,
+            },
+          });
+          const j = await r.json().catch(() => ({} as any));
+          return Array.isArray(j?.data) ? j.data.length : 0;
+        };
+        const residue =
+          (await q('departments', 'name', 'Cocina')) +
+          (await q('employees', 'name', 'Juan Dependiente')) +
+          (await q('pending_accounts', 'client_name', 'Ana')) +
+          (await q('pending_accounts', 'client_name', 'Cuenta Casa')) +
+          (await q('products', 'name', 'Frijoles negros'));
+        if (residue > 0) {
+          throw new Error(
+            `BD temporal reutilizada (${residue} fila(s) residuo de una corrida anterior en :4173). ` +
+            `Deten los procesos node en los puertos 3000/4173 y re-ejecuta para partir de BD limpia.`
+          );
+        }
+      }
+    }
     await gotoApp(page,`${BASE_URL}/register`);
     await page.locator('#businessName').fill(BUSINESS_NAME);
     await page.locator('#pin').fill(OWNER_PIN);
