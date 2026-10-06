@@ -1521,6 +1521,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     }
     const now = new Date().toISOString();
     const validUntil = result.validUntil;
+    // No activar claves ya vencidas: sería un éxito engañoso (el estado
+    // quedaría en trial igualmente). El vendedor debe generar otra clave.
+    if (new Date(validUntil).getTime() <= Date.now()) {
+      return reply.code(400).send({
+        data: null,
+        error: { message: 'La clave ya está vencida. Genere una clave nueva para este negocio.', code: 'LICENSE_EXPIRED_KEY' },
+      });
+    }
     // No permitir que una activación ACORTE una licencia vigente.
     if (session.license_valid_until) {
       const current = new Date(session.license_valid_until).getTime();
