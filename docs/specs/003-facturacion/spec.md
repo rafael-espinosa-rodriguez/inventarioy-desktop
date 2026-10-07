@@ -7,9 +7,9 @@ ticket sin folio ni validez documental. La nómina cubana ya existe: la factura
 cierra el círculo fiscal.
 
 ## 2. Objetivo
-Emitir comprobantes con folio secuencial anual desde una venta o manualmente,
-anularlos con auditoría, imprimirlos (térmico 58/80 y hoja A5) y exportar el
-resumen mensual para ONAT. Todo offline.
+Emitir comprobantes con folio secuencial anual desde una venta, anularlos con
+auditoría, imprimirlos (térmico 58/80 y hoja A5) y exportar el resumen mensual
+para ONAT. Todo offline.
 
 ## 3. Alcance
 - Dentro:
@@ -18,8 +18,8 @@ resumen mensual para ONAT. Todo offline.
     opcionales, estado emitida/anulada, `sale_id` opcional).
   - R2: Folio atómico en servidor (transacción MAX+1 por año; formato
     `CR-AAAA-NNNNNN` solo display).
-  - R3: Crear desde venta (`POST /api/invoices/from-sale`) y manual
-    (`POST /api/invoices`); listar (`GET /api/invoices` con filtros).
+  - R3: Crear solo desde venta (`POST /api/invoices/from-sale`); listar
+    (`GET /api/invoices` con filtros).
   - R4: Anular con motivo + registro en `action_logs` (no borrado físico).
   - R5: Vista `InvoicesView` (ruta `/invoices`, módulo `invoices`, roles
     owner/economist/admin) + botón "Facturar" post-venta en `SalesView`.
@@ -28,8 +28,9 @@ resumen mensual para ONAT. Todo offline.
 - Fuera (no-alcance explícito):
   - Factura electrónica / envío online a ONAT (no existe canal offline).
   - Firma digital del comprobante.
-  - Descuento de stock en factura manual (la de venta ya lo hizo; la manual
-    NO mueve inventario — se indica en UI).
+  - Creación manual de facturas (eliminada 2026-10-06: la vía manual duplicaba
+    el registro de ingresos del POS y el campo "Impuesto %" inducía a error;
+    la única vía es desde venta, que ya descontó stock).
 
 ## 4. Requisitos
 - R1-R6 según alcance.
@@ -46,8 +47,9 @@ resumen mensual para ONAT. Todo offline.
 - Supuesto: formato CR-AAAA-NNNNNN es convención interna, no norma ONAT.
 - Riesgo: doble folio por doble clic → mitigación: transacción + botón con
   estado `emitiendo`.
-- Riesgo: factura manual usada para "vender sin stock" → mitigación: aviso
-  explícito en UI (no mueve inventario).
 
 ## Estado
 `cerrado` (2026-09-30: lint + electron:build + build verdes, funcional 17/17 en servidor temporal)
+`enmienda 2026-10-06`: eliminada la creación manual (`POST /api/invoices`,
+modal y campo impuesto) — única vía: desde venta. Tests 003 reescritos
+(folios/void/clerk vía from-sale). Motivo: redundancia con el POS.

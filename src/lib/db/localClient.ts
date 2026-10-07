@@ -571,9 +571,6 @@ export const localDb = {
       const qs = params.toString();
       return getJson(`/api/invoices${qs ? `?${qs}` : ''}`);
     },
-    create: async (payload: any): Promise<LocalResponse> => {
-      return postJson('/api/invoices', payload);
-    },
     fromSale: async (sale_id: string, client_name?: string): Promise<LocalResponse> => {
       return postJson('/api/invoices/from-sale', { sale_id, client_name });
     },

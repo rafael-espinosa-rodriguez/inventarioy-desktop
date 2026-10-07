@@ -111,8 +111,6 @@ La sección **Facturación** emite comprobantes con **folio** en formato `CR-AAA
 
 **Facturar una venta:** después de registrarla, pulse **Facturar** en el comprobante. La factura copia los productos y los importes exactos de la venta (incluido el desglose del pago: efectivo, transferencia, USD, EUR). Cada venta se factura una sola vez.
 
-**Factura manual:** pulse **Nueva factura** e indique cliente, fecha, líneas, descuento e impuesto. Tenga en cuenta que la factura manual **no descuenta inventario**: para vender con descuento de existencias, facture desde la venta.
-
 **Facturar una venta anterior:** pulse **Desde venta**, elija la venta en la lista, indique el cliente y pulse **Crear comprobante**.
 
 **Anular una factura:** pulse **Anular** y escriba el **motivo** (obligatorio). La factura queda marcada como **Anulada**: no se borra, queda registrada en auditoría y no aparece en el reporte mensual.

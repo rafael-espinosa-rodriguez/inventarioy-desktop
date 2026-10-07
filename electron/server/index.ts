@@ -1794,58 +1794,6 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // Crear comprobante manual (NO mueve inventario; se indica en UI).
-  app.post('/api/invoices', async (request, reply) => {
-    if (!requireToken(request, reply)) return;
-    if (!requireInvoiceRole(request, reply)) return;
-    if (!requireWritableLicense(reply)) return;
-    const body = (request.body || {}) as any;
-    const items = Array.isArray(body.items) ? body.items : [];
-    if (!items.length) {
-      return reply.code(400).send({ data: null, error: { message: 'La factura necesita al menos una línea' } });
-    }
-    const cleanItems = items.map((it: any) => ({
-      description: String(it.description || '').trim().slice(0, 200),
-      quantity: Math.max(0, Number(it.quantity) || 0),
-      price: Math.max(0, Number(it.price) || 0),
-    })).filter((it: any) => it.description && it.quantity > 0);
-    if (!cleanItems.length) {
-      return reply.code(400).send({ data: null, error: { message: 'Líneas inválidas (descripción y cantidad > 0)' } });
-    }
-    const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : new Date().toISOString().split('T')[0];
-    const year = Number(dateStr.slice(0, 4));
-    const subtotal = r2(cleanItems.reduce((s: number, it: any) => s + it.quantity * it.price, 0));
-    const discount = Math.min(r2(body.discount), subtotal);
-    const taxRate = Math.max(0, Math.min(100, Number(body.tax_rate) || 0));
-    const taxAmount = r2((subtotal - discount) * taxRate / 100);
-    const total = r2(subtotal - discount + taxAmount);
-    try {
-      const created = transaction(() => {
-        const now = new Date().toISOString();
-        const seq = nextFolioSeq(year);
-        const id = crypto.randomUUID();
-        runRaw(
-          `INSERT INTO invoices (id, user_id, folio_year, folio_seq, client_name, sale_id, date, subtotal, discount, tax_rate, tax_amount, total, payment_method, efectivo, transferencia, usd, eur, status, notes, created_at)
-           VALUES (?, 'owner', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'emitida', ?, ?)`,
-          [id, year, seq, String(body.client_name || 'Cliente').trim().slice(0, 120) || 'Cliente', dateStr,
-           subtotal, discount, taxRate, taxAmount, total, body.payment_method || null,
-           r2(body.efectivo), r2(body.transferencia), r2(body.usd), r2(body.eur),
-           body.notes ? String(body.notes).slice(0, 500) : null, now]
-        );
-        for (const it of cleanItems) {
-          runRaw(
-            `INSERT INTO invoice_items (id, invoice_id, description, quantity, price, subtotal, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [crypto.randomUUID(), id, it.description, it.quantity, it.price, r2(it.quantity * it.price), now]
-          );
-        }
-        return getRaw<any>('SELECT * FROM invoices WHERE id = ?', [id]);
-      });
-      return { data: created, error: null };
-    } catch (e: any) {
-      return reply.code(500).send({ data: null, error: { message: e?.message || 'No se pudo crear la factura', code: 'INVOICE_ERROR' } });
-    }
-  });
-
   // Crear comprobante desde una venta (replica ítems e importes exactos).
   app.post('/api/invoices/from-sale', async (request, reply) => {
     if (!requireToken(request, reply)) return;

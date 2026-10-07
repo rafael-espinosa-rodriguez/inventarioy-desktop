@@ -1,5 +1,5 @@
 import { useState, useEffect, Fragment } from 'react';
-import { ReceiptText, Plus, Search, Printer, Download, X, Ban, ShoppingCart, FileSpreadsheet } from 'lucide-react';
+import { ReceiptText, Search, Printer, Download, X, Ban, ShoppingCart, FileSpreadsheet } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
@@ -8,12 +8,6 @@ import { useDatabaseStore, folioLabel, type Invoice } from '../../store/dbStore'
 import { useAuthStore } from '../../store/authStore';
 import { exportToExcel } from '../../lib/utils';
 import { printInvoice } from './TicketView';
-
-interface ManualLine {
-  description: string;
-  quantity: number;
-  price: number;
-}
 
 const currentYear = () => new Date().getFullYear();
 const currentMonth = () => String(new Date().getMonth() + 1).padStart(2, '0');
@@ -24,7 +18,6 @@ export default function InvoicesView() {
   const sales = useDatabaseStore((s) => s.sales);
   const fetchInvoices = useDatabaseStore((s) => s.fetchInvoices);
   const fetchInvoiceItems = useDatabaseStore((s) => s.fetchInvoiceItems);
-  const createInvoiceManual = useDatabaseStore((s) => s.createInvoiceManual);
   const createInvoiceFromSale = useDatabaseStore((s) => s.createInvoiceFromSale);
   const voidInvoice = useDatabaseStore((s) => s.voidInvoice);
   const invoiceReport = useDatabaseStore((s) => s.invoiceReport);
@@ -36,19 +29,10 @@ export default function InvoicesView() {
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const [showCreate, setShowCreate] = useState(false);
   const [showFromSale, setShowFromSale] = useState(false);
   const [voidTarget, setVoidTarget] = useState<Invoice | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [busy, setBusy] = useState(false);
-
-  // Crear manual
-  const [clientName, setClientName] = useState('Cliente');
-  const [invDate, setInvDate] = useState(new Date().toISOString().split('T')[0]);
-  const [lines, setLines] = useState<ManualLine[]>([{ description: '', quantity: 1, price: 0 }]);
-  const [discount, setDiscount] = useState(0);
-  const [taxRate, setTaxRate] = useState(0);
-  const [notes, setNotes] = useState('');
 
   // Desde venta
   const [fromSaleId, setFromSaleId] = useState('');
@@ -68,38 +52,6 @@ export default function InvoicesView() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const manualSubtotal = lines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.price) || 0), 0);
-  const manualTotal = Math.max(0, manualSubtotal - (Number(discount) || 0));
-
-  const handleCreateManual = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await createInvoiceManual({
-        client_name: clientName.trim() || 'Cliente',
-        date: invDate,
-        items: lines.map((l) => ({ description: l.description, quantity: Number(l.quantity) || 0, price: Number(l.price) || 0 })),
-        discount: Number(discount) || 0,
-        tax_rate: Number(taxRate) || 0,
-        notes: notes.trim() || undefined,
-      });
-      if (!res.success || !res.invoice) {
-        toast.error(res.error || 'No se pudo crear la factura');
-      } else {
-        toast.success(`Factura ${folioLabel(res.invoice)} creada`);
-        setShowCreate(false);
-        setLines([{ description: '', quantity: 1, price: 0 }]);
-        setDiscount(0);
-        setTaxRate(0);
-        setNotes('');
-        await load();
-      }
-    } catch (e: any) {
-      toast.error(e?.message || 'No se pudo crear la factura');
-    }
-    setBusy(false);
-  };
 
   const handleFromSale = async () => {
     if (busy || !fromSaleId) return;
@@ -209,10 +161,6 @@ export default function InvoicesView() {
           <Button variant="outline" onClick={() => setShowFromSale(true)} className="gap-2">
             <ShoppingCart className="h-4 w-4" />
             Desde venta
-          </Button>
-          <Button onClick={() => setShowCreate(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            Nueva factura
           </Button>
         </div>
       </div>
@@ -333,65 +281,6 @@ export default function InvoicesView() {
           </tbody>
         </table>
       </div>
-
-      {/* Modal: crear manual */}
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !busy && setShowCreate(false)}>
-          <div className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-text">Nueva factura (manual)</h3>
-              <button onClick={() => setShowCreate(false)} className="text-text-secondary hover:text-text"><X className="h-5 w-5" /></button>
-            </div>
-            <p className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
-              La factura manual <strong className="text-text">no descuenta inventario</strong>. Para vender con descuento de stock, factura desde la venta.
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
-                <Label className="text-xs">Cliente</Label>
-                <Input value={clientName} onChange={(e) => setClientName(e.target.value)} className="h-9" />
-              </div>
-              <div className="col-span-2">
-                <Label className="text-xs">Fecha</Label>
-                <Input type="date" value={invDate} onChange={(e) => setInvDate(e.target.value)} className="h-9" />
-              </div>
-            </div>
-            <div className="mt-3 space-y-2">
-              <Label className="text-xs">Líneas</Label>
-              {lines.map((l, i) => (
-                <div key={i} className="grid grid-cols-12 items-center gap-2">
-                  <Input value={l.description} onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))} placeholder="Descripción" className="col-span-6 h-9" />
-                  <Input type="number" min={0} value={l.quantity} onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, quantity: Number(e.target.value) } : x)))} className="col-span-2 h-9" />
-                  <Input type="number" min={0} value={l.price} onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, price: Number(e.target.value) } : x)))} placeholder="Precio" className="col-span-3 h-9" />
-                  <button onClick={() => setLines(lines.filter((_, j) => j !== i))} disabled={lines.length <= 1} className="col-span-1 text-text-secondary hover:text-danger disabled:opacity-30">
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-              <Button variant="outline" size="sm" onClick={() => setLines([...lines, { description: '', quantity: 1, price: 0 }])} className="gap-1">
-                <Plus className="h-3.5 w-3.5" /> Línea
-              </Button>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">Descuento</Label>
-                <Input type="number" min={0} value={discount} onChange={(e) => setDiscount(Number(e.target.value))} className="h-9" />
-              </div>
-              <div>
-                <Label className="text-xs">Impuesto %</Label>
-                <Input type="number" min={0} max={100} value={taxRate} onChange={(e) => setTaxRate(Number(e.target.value))} className="h-9" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <Label className="text-xs">Notas (opcional)</Label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} className="h-9" />
-            </div>
-            <div className="mt-4 flex items-center justify-between">
-              <span className="text-sm text-text-secondary">Total estimado: <strong className="font-mono text-primary">${manualTotal.toFixed(2)}</strong></span>
-              <Button onClick={handleCreateManual} disabled={busy}>{busy ? 'Creando…' : 'Crear factura'}</Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Modal: desde venta */}
       {showFromSale && (

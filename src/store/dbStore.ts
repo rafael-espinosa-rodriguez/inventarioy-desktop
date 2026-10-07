@@ -729,7 +729,6 @@ interface DatabaseState {
   getDailyClosings: () => Promise<void>;
   fetchInvoices: (filters?: { year?: number; month?: string; status?: string; q?: string }) => Promise<void>;
   fetchInvoiceItems: (invoiceId: string) => Promise<InvoiceItem[]>;
-  createInvoiceManual: (payload: { client_name: string; date?: string; items: { description: string; quantity: number; price: number }[]; discount?: number; tax_rate?: number; payment_method?: string | null; efectivo?: number; transferencia?: number; usd?: number; eur?: number; notes?: string }) => Promise<{ success: boolean; invoice?: Invoice; error?: string }>;
   createInvoiceFromSale: (saleId: string, clientName?: string) => Promise<{ success: boolean; invoice?: Invoice; error?: string }>;
   voidInvoice: (id: string, reason: string) => Promise<{ success: boolean; error?: string }>;
   invoiceReport: (year: number, month: string) => Promise<any>;
@@ -4729,23 +4728,6 @@ createDailyClosing: async (closing) => {
     } catch (error: any) {
       logger.error('Error en fetchInvoiceItems:', error);
       throw new Error(error.message || 'No se pudieron cargar las líneas');
-    }
-  },
-
-  createInvoiceManual: async (payload) => {
-    const user = useAuthStore.getState().user;
-    if (!user) return { success: false, error: 'No autenticado' };
-    try {
-      const { data, error } = await localDb.invoice.create(payload);
-      if (error || !data) {
-        logger.error('Error en createInvoiceManual:', error);
-        return { success: false, error: error?.message || 'No se pudo crear la factura' };
-      }
-      set((state) => ({ invoices: [data as Invoice, ...state.invoices] }));
-      return { success: true, invoice: data as Invoice };
-    } catch (error: any) {
-      logger.error('Error en createInvoiceManual:', error);
-      return { success: false, error: error.message || 'No se pudo crear la factura' };
     }
   },
 
