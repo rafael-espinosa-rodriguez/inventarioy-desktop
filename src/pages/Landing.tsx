@@ -27,7 +27,6 @@ const FEATURES = [
   'Módulo de Tránsito para movimientos internos',
   'Cierres de caja por turno con validación de cuadre',
   'Punto de venta: Salón, Domicilio, Bar y Venta rápida',
-  'Comprobantes con folio anual y reporte para ONAT',
   'Cobro mixto: efectivo CUP, transferencia, USD, EUR',
   'Recetas con descuento automático de ingredientes',
   'Personal, roles por PIN y nómina cubana',
@@ -879,7 +878,6 @@ export default function Landing() {
                 { icon: Save, color: 'text-success', q: '¿Cómo respaldo mis datos sin internet?', a: 'La aplicación guarda respaldos automáticos internos de la base de datos. Además, puede copiar manualmente el archivo de datos a una memoria USB como copia externa. Ninguna información sale a internet: es el dueño físico de sus datos.' },
                 { icon: Printer, color: 'text-primary', q: '¿Funciona con impresoras térmicas?', a: 'Sí, imprime tickets en impresoras térmicas de 58mm y 80mm conectadas por USB, las más comunes en Cuba.' },
                 { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribe por WhatsApp al +53 54523884, realiza el pago en CUP por transferencia o en efectivo, y recibe su clave de activación digital para su equipo. Sin trámites bancarios ni tarjetas internacionales.' },
-                { icon: ReceiptText, color: 'text-primary', q: '¿Emite facturas o comprobantes?', a: 'Sí. Cada venta puede generar su comprobante con folio anual (CR-AAAA-NNNNNN), o puede crearlo manual. Se imprime en térmico de 58/80mm o en hoja A5, admite anulación con auditoría y exporta el resumen mensual para ONAT a Excel.' },
                 { icon: Rocket, color: 'text-primary', q: '¿Cómo empiezo a usar InventarioY?', a: 'Instale la aplicación, registre su negocio con un nombre y un PIN de acceso, y tendrá 7 días de prueba gratis con todas las funciones. Con ese PIN cree accesos por rol para sus empleados.' },
                 { icon: Users, color: 'text-success', q: '¿Puedo tener múltiples usuarios?', a: 'Sí. Cada empleado accede con su PIN de 4 dígitos y un rol (dueño, económico, admin, supervisor, dependiente). Cada rol ve solo los módulos que le corresponden.' },
                 { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 130,000 CUP en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con su clave permanente.' },
@@ -946,7 +944,7 @@ export default function Landing() {
             <h4 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-text">Módulos</h4>
             <ul className="space-y-2 text-text-secondary">
               <li><a href="#features" className="transition-colors hover:text-primary">Punto de venta</a></li>
-              <li><a href="#faq" className="transition-colors hover:text-primary">Facturación y comprobantes</a></li>
+              <li><a href="#faq" className="transition-colors hover:text-primary">Preguntas frecuentes</a></li>
               <li><a href="#features" className="transition-colors hover:text-primary">Escandallo de recetas</a></li>
               <li><a href="#infraestructura" className="transition-colors hover:text-primary">Cierre con validación</a></li>
               <li><a href="#infraestructura" className="transition-colors hover:text-primary">Multi-PIN por roles</a></li>

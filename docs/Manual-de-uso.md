@@ -105,21 +105,7 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 - Las ventas se clasifican automáticamente en el turno que corresponda según la hora en que se realizan; no hace falta seleccionar el turno al vender.
 - En **Cierres de Caja** podrá cerrar cada turno por separado y consultar el desglose de cada uno.
 
-## 11. Facturación (comprobantes para la ONAT)
-
-La sección **Facturación** emite comprobantes con **folio** en formato `CR-AAAA-NNNNNN`: año más número secuencial del año (la numeración se reinicia cada enero). Todo funciona sin internet. Está visible para los roles Dueño/a, Económico/a y Administrador.
-
-**Facturar una venta:** después de registrarla, pulse **Facturar** en el comprobante. La factura copia los productos y los importes exactos de la venta (incluido el desglose del pago: efectivo, transferencia, USD, EUR). Cada venta se factura una sola vez.
-
-**Facturar una venta anterior:** pulse **Desde venta**, elija la venta en la lista, indique el cliente y pulse **Crear comprobante**.
-
-**Anular una factura:** pulse **Anular** y escriba el **motivo** (obligatorio). La factura queda marcada como **Anulada**: no se borra, queda registrada en auditoría y no aparece en el reporte mensual.
-
-**Imprimir:** cada factura puede imprimirse en formato **térmico** (58/80 mm) o en **hoja A5**, con los datos del negocio, el cliente, el folio y los totales.
-
-**Reporte mensual para la ONAT:** filtre por año, mes, estado o cliente y pulse **Reporte ONAT del mes (Excel)**. El archivo incluye folio, fecha, cliente, subtotal, descuento, impuesto, total y desglose de pago, solo de facturas emitidas.
-
-## 12. Soporte y actualizaciones
+## 11. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).
 - **Actualizaciones:** la licencia **vitalicia** incluye actualizaciones de la aplicación. Las suscripciones mensuales incluyen actualizaciones mientras estén vigentes.

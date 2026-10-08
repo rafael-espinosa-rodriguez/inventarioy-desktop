@@ -1,8 +1,6 @@
-import React, { useRef, useState } from 'react';
-import { Printer, X, Building2, Calendar, User, FileText } from 'lucide-react';
+import React, { useRef } from 'react';
+import { Printer, X, Building2, Calendar, User } from 'lucide-react';
 import { Button } from '../../components/ui/button';
-import { toast } from 'sonner';
-import { useDatabaseStore, folioLabel } from '../../store/dbStore';
 
 interface TicketItem {
   name: string;
@@ -31,36 +29,13 @@ interface TicketViewProps {
   ticketData: TicketData;
   onClose: () => void;
   isPreticket?: boolean;
-  // Id de la venta registrada (spec 003): habilita el botón "Facturar".
-  saleId?: string | null;
 }
 
-export default function TicketView({ ticketData, onClose, isPreticket = false, saleId = null }: TicketViewProps) {
+export default function TicketView({ ticketData, onClose, isPreticket = false }: TicketViewProps) {
   const printRef = useRef<HTMLDivElement>(null);
-  const [invoicing, setInvoicing] = useState(false);
-  const [invoicedFolio, setInvoicedFolio] = useState<string | null>(null);
 
   const handlePrint = () => {
     printTicket(ticketData);
-  };
-
-  const canInvoice = !!saleId && !isPreticket && !ticketData.isPendingAccount && !invoicedFolio;
-
-  const handleInvoice = async () => {
-    if (!saleId || invoicing) return;
-    setInvoicing(true);
-    try {
-      const res = await useDatabaseStore.getState().createInvoiceFromSale(saleId);
-      if (!res.success || !res.invoice) {
-        toast.error(res.error || 'No se pudo facturar la venta');
-      } else {
-        setInvoicedFolio(folioLabel(res.invoice));
-        toast.success(`Factura ${folioLabel(res.invoice)} creada`);
-      }
-    } catch (e: any) {
-      toast.error(e?.message || 'No se pudo facturar la venta');
-    }
-    setInvoicing(false);
   };
 
   const formatDate = (date: Date) => {
@@ -177,18 +152,6 @@ export default function TicketView({ ticketData, onClose, isPreticket = false, s
             <Printer className="h-4 w-4" />
             Imprimir
           </Button>
-          {(canInvoice || invoicedFolio) && (
-            <Button
-              variant="outline"
-              onClick={handleInvoice}
-              disabled={!canInvoice || invoicing}
-              className="flex-1 gap-2 print-hide"
-              title={invoicedFolio ? `Ya facturada: ${invoicedFolio}` : 'Crear comprobante de esta venta'}
-            >
-              <FileText className="h-4 w-4" />
-              {invoicing ? 'Facturando…' : invoicedFolio ? invoicedFolio : 'Facturar'}
-            </Button>
-          )}
           <Button variant="outline" onClick={onClose} className="flex-1 print-hide">
             Cerrar
           </Button>
@@ -196,148 +159,6 @@ export default function TicketView({ ticketData, onClose, isPreticket = false, s
       </div>
     </div>
   );
-}
-
-export interface InvoicePrintItem {
-  description: string;
-  quantity: number;
-  price: number;
-  subtotal: number;
-}
-
-export interface InvoicePrintData {
-  folio: string;
-  businessName: string;
-  clientName: string;
-  date: string;
-  items: InvoicePrintItem[];
-  subtotal: number;
-  discount: number;
-  taxRate: number;
-  taxAmount: number;
-  total: number;
-  paymentMethod?: string | null;
-  status: 'emitida' | 'anulada';
-  notes?: string | null;
-}
-
-// Impresión de comprobantes (spec 003): térmico 58mm o hoja A5.
-// Reutiliza el patrón window.open + document.write de printTicket.
-export function printInvoice(data: InvoicePrintData, format: 'thermal' | 'a5' = 'thermal') {
-  const money = (n: number) => '$' + (Number(n) || 0).toFixed(2);
-  const safe = {
-    folio: escapeHtml(data.folio),
-    businessName: escapeHtml(data.businessName || 'Mi Negocio'),
-    clientName: escapeHtml(data.clientName || 'Cliente'),
-    date: escapeHtml(data.date),
-    paymentMethod: escapeHtml(data.paymentMethod || '—'),
-    notes: escapeHtml(data.notes || ''),
-    items: data.items.map((it) => ({
-      description: escapeHtml(it.description),
-      quantity: it.quantity,
-      price: it.price,
-      subtotal: it.subtotal,
-    })),
-  };
-  const voided = data.status === 'anulada';
-  const rows = safe.items.map((it) => `
-    <div class="item"><span>${it.quantity}x ${it.description}</span><span>${money(it.subtotal)}</span></div>
-  `).join('');
-
-  const ticketHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>Factura ${safe.folio}</title>
-      <style>
-        body { font-family: 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; line-height: 1.1; width: 58mm; margin: 0; margin-left: 5px; padding: 2px; }
-        .header { text-align: center; margin-bottom: 8px; }
-        .header h1 { font-size: 17px; margin: 0; }
-        .folio { font-size: 15px; margin-top: 4px; }
-        .voided { font-size: 16px; border: 2px solid #000; padding: 4px; margin: 8px 0; text-align: center; }
-        .divider { border-top: 1px dashed #000; margin: 8px 0; }
-        .item { display: flex; justify-content: space-between; }
-        .total { font-weight: bold; font-size: 16px; }
-        .footer { text-align: center; margin-top: 8px; font-weight: 400; font-size: 11px; }
-        @media print { body { margin: 0; } }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <h1>${safe.businessName}</h1>
-        <div class="folio">COMPROBANTE ${safe.folio}</div>
-      </div>
-      ${voided ? '<div class="voided">ANULADA</div>' : ''}
-      <div>Fecha: ${safe.date}</div>
-      <div>Cliente: ${safe.clientName}</div>
-      <div>Pago: ${safe.paymentMethod}</div>
-      <div class="divider"></div>
-      ${rows}
-      <div class="divider"></div>
-      <div class="item"><span>Subtotal:</span><span>${money(data.subtotal)}</span></div>
-      ${data.discount > 0 ? `<div class="item"><span>Descuento:</span><span>-${money(data.discount)}</span></div>` : ''}
-      ${data.taxAmount > 0 ? `<div class="item"><span>Impuesto (${data.taxRate}%):</span><span>${money(data.taxAmount)}</span></div>` : ''}
-      <div class="item total"><span>TOTAL:</span><span>${money(data.total)}</span></div>
-      ${safe.notes ? `<div class="divider"></div><div class="footer">${safe.notes}</div>` : ''}
-    </body>
-    </html>
-  `;
-
-  const a5Html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>Factura ${safe.folio}</title>
-      <style>
-        body { font-family: Arial, sans-serif; font-size: 13px; color: #000; max-width: 148mm; margin: 10mm auto; }
-        h1 { font-size: 20px; margin: 0; }
-        .meta { margin: 12px 0; line-height: 1.6; }
-        table { width: 100%; border-collapse: collapse; margin: 12px 0; }
-        th, td { border: 1px solid #000; padding: 6px 8px; text-align: left; }
-        th { background: #eee; }
-        td.num, th.num { text-align: right; }
-        .totals { width: 60%; margin-left: auto; }
-        .voided { font-size: 18px; font-weight: bold; border: 3px solid #000; padding: 6px; text-align: center; margin: 12px 0; }
-        @media print { body { margin: 0 auto; } }
-      </style>
-    </head>
-    <body>
-      <h1>${safe.businessName}</h1>
-      <div><strong>COMPROBANTE ${safe.folio}</strong>${voided ? ' — ANULADA' : ''}</div>
-      ${voided ? '<div class="voided">ANULADA</div>' : ''}
-      <div class="meta">
-        <div><strong>Fecha:</strong> ${safe.date}</div>
-        <div><strong>Cliente:</strong> ${safe.clientName}</div>
-        <div><strong>Pago:</strong> ${safe.paymentMethod}</div>
-      </div>
-      <table>
-        <thead><tr><th>Cant.</th><th>Descripción</th><th class="num">Precio</th><th class="num">Importe</th></tr></thead>
-        <tbody>
-          ${safe.items.map((it) => `<tr><td>${it.quantity}</td><td>${it.description}</td><td class="num">${money(it.price)}</td><td class="num">${money(it.subtotal)}</td></tr>`).join('')}
-        </tbody>
-      </table>
-      <table class="totals">
-        <tr><td>Subtotal</td><td class="num">${money(data.subtotal)}</td></tr>
-        ${data.discount > 0 ? `<tr><td>Descuento</td><td class="num">-${money(data.discount)}</td></tr>` : ''}
-        ${data.taxAmount > 0 ? `<tr><td>Impuesto (${data.taxRate}%)</td><td class="num">${money(data.taxAmount)}</td></tr>` : ''}
-        <tr><td><strong>TOTAL</strong></td><td class="num"><strong>${money(data.total)}</strong></td></tr>
-      </table>
-      ${safe.notes ? `<div class="meta">Notas: ${safe.notes}</div>` : ''}
-    </body>
-    </html>
-  `;
-
-  const printWindow = window.open('', '_blank');
-  if (printWindow) {
-    printWindow.document.write(format === 'a5' ? a5Html : ticketHtml);
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-    }, 250);
-  }
 }
 
 function escapeHtml(str: string): string {

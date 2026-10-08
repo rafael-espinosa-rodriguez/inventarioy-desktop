@@ -1,5 +1,7 @@
 # Plan 003 — Facturación (comprobantes) + reporte mensual ONAT
 
+> **Estado: ELIMINADO (2026-10-07)** — spec revertido; ver nota en `spec.md`.
+
 Referencia `spec.md` (R1-R6, CA1-CA6).
 
 ## 1. Decisiones

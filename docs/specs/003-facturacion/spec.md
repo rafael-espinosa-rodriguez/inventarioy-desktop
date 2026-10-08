@@ -1,5 +1,8 @@
 # Spec 003 — Facturación (comprobantes) + reporte mensual ONAT
 
+> **Estado: ELIMINADO (2026-10-07)** — el módulo se retiró por decisión del usuario.
+> Migración 16 elimina tablas, módulo en roles y bitácora. Historial conservado.
+
 ## 1. Contexto
 Propuesta P2 del reporte de mejoras (prioridad Alta) + P10 (botón facturar en
 POS, absorbido aquí). La ONAT exige comprobantes y resúmenes; hoy solo hay

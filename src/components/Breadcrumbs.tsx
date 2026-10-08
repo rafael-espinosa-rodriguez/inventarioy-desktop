@@ -16,7 +16,6 @@ const labelMap: Record<string, string> = {
   'filtered': 'Centro Filtrado',
   'hr': 'RRHH',
   'settings': 'Configuración',
-  'invoices': 'Facturación',
   'license': 'Licencia',
   'action-logs': 'Registro de Acciones',
   'users': 'Gestión de Usuarios',

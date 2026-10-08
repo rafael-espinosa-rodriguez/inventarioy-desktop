@@ -749,6 +749,28 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     WHERE id IN ('owner', 'economist', 'admin') AND json_valid(modules);
     `,
   },
+  {
+    version: 16,
+    description: 'Elimina el módulo de Facturación (spec 003 revertido): tablas, módulo en roles y bitácora',
+    sql: `
+    -- Reverso de la migración 15: quita 'invoices' de roles.modules.
+    -- json_valid protege filas con JSON roto; EXISTS evita reescribir si no está.
+    UPDATE roles SET modules = (
+      SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(roles.modules) WHERE value <> 'invoices'
+      )
+    ), updated_at = datetime('now')
+    WHERE json_valid(modules)
+      AND EXISTS (SELECT 1 FROM json_each(roles.modules) WHERE value = 'invoices');
+
+    -- Bitácora: registros huérfanos del módulo eliminado (anulaciones).
+    DELETE FROM action_logs WHERE module = 'invoices';
+
+    -- Tablas del módulo eliminado (aprobado por el usuario 2026-10-07).
+    DROP TABLE IF EXISTS invoice_items;
+    DROP TABLE IF EXISTS invoices;
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {

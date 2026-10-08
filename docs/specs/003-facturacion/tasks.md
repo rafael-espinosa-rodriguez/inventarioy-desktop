@@ -1,5 +1,8 @@
 # Tasks 003 — Facturación + reporte ONAT
 
+> **Estado: ELIMINADO (2026-10-07)** — módulo retirado; migración 16 revierte
+> 14/15 (DROP tablas + roles + action_logs). Tareas siguientes canceladas.
+
 - [x] T1: migración 14 (tablas) ✓ + migración 15 (módulo `invoices` en filas
   owner/economist/admin vía JSON1) + `LEGACY_ROLE_MODULES`. Done: electron:build.
 - [x] T2: endpoints (list/create/from-sale/void/report), folio atómico en
