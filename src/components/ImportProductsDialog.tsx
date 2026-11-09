@@ -114,7 +114,7 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
       isOpen={isOpen}
       onClose={onClose}
       title="Importar inventario"
-      description="Cargue sus productos desde Excel (CSV) o pegando las celdas copiadas."
+      description="Cargue sus productos desde un archivo CSV generado en Excel."
       size="full"
     >
       <div className="space-y-5">
@@ -129,29 +129,16 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
           </Button>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <label htmlFor="import-file" className="text-sm font-medium text-text">Archivo CSV/TSV</label>
-            <Input
-              id="import-file"
-              type="file"
-              accept=".csv,.tsv,.txt,text/csv,text/plain"
-              onChange={e => handleFile(e.target.files?.[0])}
-            />
-            {fileName && <p className="text-xs text-text-secondary">Archivo: {fileName}</p>}
-            {readError && <p className="text-xs text-danger">{readError}</p>}
-          </div>
-          <div className="space-y-2">
-            <label htmlFor="import-paste" className="text-sm font-medium text-text">o pegue las celdas de Excel</label>
-            <textarea
-              id="import-paste"
-              value={text}
-              onChange={e => { setResult(null); setText(e.target.value); }}
-              rows={4}
-              placeholder={'Nombre;Categoría;Unidad;Cantidad;Costo;Precio\nArroz;Granos y Cereales;kg;10;250;0'}
-              className="flex w-full rounded-xl border border-border bg-bg px-3 py-2 font-mono text-xs text-text placeholder:text-text-secondary/60 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
+        <div className="space-y-2">
+          <label htmlFor="import-file" className="text-sm font-medium text-text">Archivo CSV/TSV</label>
+          <Input
+            id="import-file"
+            type="file"
+            accept=".csv,.tsv,.txt,text/csv,text/plain"
+            onChange={e => handleFile(e.target.files?.[0])}
+          />
+          {fileName && <p className="text-xs text-text-secondary">Archivo: {fileName}</p>}
+          {readError && <p className="text-xs text-danger">{readError}</p>}
         </div>
 
         {preview?.fatal && (

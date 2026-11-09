@@ -1,6 +1,7 @@
 # Spec 005 — Importar inventario desde Excel/CSV
 
 > **Estado: cerrado (2026-10-08)** — implementado y verificado (suite 20/20).
+> **Nota (2026-10-09):** se retiró la opción de pegar celdas (spec 006); la carga es solo por archivo CSV/TSV.
 
 ## 1. Contexto
 Hoy el alta de productos es uno por uno (`InventoryView` → `addProduct`). Un negocio

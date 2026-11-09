@@ -43,7 +43,7 @@ Si ya tiene su inventario en una hoja de cálculo, no necesita escribir los prod
 1. Vaya a **Inventario** y pulse **"Importar inventario"**.
 2. Pulse **"Descargar plantilla"**: se descarga `plantilla-inventario.csv`, que puede abrir en Excel.
 3. Llene una fila por producto. Solo el **Nombre** es obligatorio; puede completar categoría, unidad, cantidad, costo, precio, stock mínimo (ROP), EOQ, vencimiento y descripción. Las columnas **Individual**, **Gasto variable** y **Consumo directo** se responden con **Sí** o **No**.
-4. Guarde el archivo como **CSV** y súbalo con el selector de archivo (también puede copiar las celdas de Excel y pegarlas en el cuadro de texto).
+4. Guarde el archivo como **CSV** y súbalo con el selector de archivo.
 5. Revise la **vista previa**: verá las filas válidas, las duplicadas (se omiten) y las que tienen error con su motivo.
 6. Pulse **Importar**: los productos se crean con su **stock inicial** registrado como movimiento de entrada.
 

@@ -70,6 +70,12 @@ async function ensureLoggedIn(page: Page) {
   await dismissPinModal(page);
 }
 
+async function uploadImportFile(page: Page, fileName: string, content: string) {
+  const filePath = path.join(os.tmpdir(), `${fileName}-${suffix}`);
+  fs.writeFileSync(filePath, content, 'utf8');
+  await page.setInputFiles('#import-file', filePath);
+}
+
 async function openImportDialog(page: Page) {
   await ensureLoggedIn(page);
   await page.goto(APP_URL + '/dashboard/inventory', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -180,12 +186,12 @@ test('importa CSV: válidas, avisos, duplicada omitida y error reportado', async
   expect(resultCsv.toLowerCase()).toContain(dupName.toLowerCase());
 });
 
-test('importa pegando celdas de Excel (TSV)', async ({ page, request }) => {
-  const name = `pegado qa ${suffix}`;
+test('importa un archivo TSV (tabulado)', async ({ page, request }) => {
+  const name = `tsv qa ${suffix}`;
   const tsv = ['Nombre\tUnidad\tCantidad\tCosto', `${name}\tkg\t5\t120`].join('\n');
 
   await openImportDialog(page);
-  await page.fill('#import-paste', tsv);
+  await uploadImportFile(page, 'import.tsv', tsv);
   await expect(page.getByText('1 válidas')).toBeVisible({ timeout: 15000 });
   await page.getByRole('button', { name: 'Importar 1 producto' }).click();
   await expect(page.getByText('Importación terminada')).toBeVisible({ timeout: 30000 });
@@ -200,7 +206,7 @@ test('rechaza más de 2000 filas sin escribir nada', async ({ page }) => {
   await openImportDialog(page);
   const rows = ['Nombre;Unidad;Cantidad'];
   for (let i = 0; i < 2001; i++) rows.push(`producto ${i};u;1`);
-  await page.fill('#import-paste', rows.join('\n'));
+  await uploadImportFile(page, 'limite.csv', rows.join('\n'));
   await expect(page.getByText(/el máximo por importación es 2000/)).toBeVisible({ timeout: 20000 });
   await expect(page.getByRole('button', { name: /^Importar 0 producto/ })).toBeDisabled();
 });
@@ -218,7 +224,7 @@ test('multi-almacén: stock solo en el principal y 0 en el resto', async ({ page
 
   const name = `multi almacen qa ${suffix}`;
   await openImportDialog(page);
-  await page.fill('#import-paste', ['Nombre;Unidad;Cantidad', `${name};kg;7`].join('\n'));
+  await uploadImportFile(page, 'multi-almacen.csv', ['Nombre;Unidad;Cantidad', `${name};kg;7`].join('\n'));
   await expect(page.getByText('1 válidas')).toBeVisible({ timeout: 15000 });
   await page.getByRole('button', { name: 'Importar 1 producto' }).click();
   await expect(page.getByText('Importación terminada')).toBeVisible({ timeout: 30000 });
@@ -246,7 +252,7 @@ test('producto inactivo con el mismo nombre no bloquea la importación', async (
   expect([200, 201]).toContain(inactive.status);
 
   await openImportDialog(page);
-  await page.fill('#import-paste', ['Nombre;Unidad;Cantidad', `${name};u;4`].join('\n'));
+  await uploadImportFile(page, 'inactivo.csv', ['Nombre;Unidad;Cantidad', `${name};u;4`].join('\n'));
   await expect(page.getByText('1 válidas')).toBeVisible({ timeout: 15000 });
   await page.getByRole('button', { name: 'Importar 1 producto' }).click();
   await expect(page.getByText('Importación terminada')).toBeVisible({ timeout: 30000 });
@@ -264,7 +270,7 @@ test('estrés: importa 600 filas en lotes sin colgarse', async ({ page, request 
   for (let i = 0; i < 600; i++) rows.push(`${prefix} ${i};u;1;10`);
 
   await openImportDialog(page);
-  await page.fill('#import-paste', rows.join('\n'));
+  await uploadImportFile(page, 'estres.csv', rows.join('\n'));
   await expect(page.getByText('600 válidas')).toBeVisible({ timeout: 60000 });
 
   const started = Date.now();
