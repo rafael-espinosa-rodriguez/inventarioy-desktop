@@ -9,8 +9,20 @@ import { collectAlerts, digestSignature } from '../electron/alerts';
 
 const E2E_DIR = path.join(os.tmpdir(), 'inventarioy-alertstest');
 
+// En algunos entornos Node/Windows `fs.rmSync({ recursive: true })` no borra
+// nada y no lanza error; se hace el borrado recursivo a mano.
+function removeDir(dir: string) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const target = path.join(dir, entry.name);
+    if (entry.isDirectory()) removeDir(target);
+    else { try { fs.unlinkSync(target); } catch { /* en uso: se ignora */ } }
+  }
+  try { fs.rmdirSync(dir); } catch { /* no vacío o en uso */ }
+}
+
 test.beforeAll(() => {
-  fs.rmSync(E2E_DIR, { recursive: true, force: true });
+  removeDir(E2E_DIR);
   fs.mkdirSync(E2E_DIR, { recursive: true });
   initDatabase(E2E_DIR);
   const now = new Date().toISOString();

@@ -25,7 +25,9 @@ test('landing renderiza e interactúa sin red externa', async ({ page }) => {
 
   await expect(page.getByText('5,000', { exact: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Vitalicio' }).click();
-  await expect(page.getByText('130,000', { exact: true }).first()).toBeVisible();
+  const pricing = page.locator('#pricing');
+  await expect(pricing.getByText('250', { exact: true }).first()).toBeVisible();
+  await expect(pricing.getByText('USD', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Actualizaciones incluidas de por vida', { exact: false }).first()).toBeVisible();
 
   await page.getByRole('button', { name: /ESCANDALLO/ }).click();

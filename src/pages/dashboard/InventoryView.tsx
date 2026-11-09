@@ -5,8 +5,9 @@ import { Input } from '../../components/ui/input';
 import { NumberInput } from '../../components/ui/NumberInput';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
-import { PackagePlus, ArrowRightLeft, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { PackagePlus, ArrowRightLeft, RefreshCw, ChevronLeft, ChevronRight, Upload } from 'lucide-react';
 import { toast } from 'sonner';
+import { ImportProductsDialog } from '../../components/ImportProductsDialog';
 import {
   convertUnit,
   getCompatibleUnits,
@@ -93,6 +94,7 @@ export default function InventoryView() {
   const movementClock = useRealTimeClock(movement.date);
   const [isSubmittingMovement, setIsSubmittingMovement] = useState(false);
   const [isSubmittingProduct, setIsSubmittingProduct] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   // Sincronizar warehouse_id del formulario con el almacén global seleccionado
   useEffect(() => {
@@ -317,7 +319,13 @@ export default function InventoryView() {
             Alta de productos y registro de movimientos
           </p>
         </div>
+        <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)}>
+          <Upload className="mr-2 h-4 w-4" />
+          Importar inventario
+        </Button>
       </div>
+
+      <ImportProductsDialog isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">

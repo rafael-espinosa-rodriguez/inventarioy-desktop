@@ -34,7 +34,7 @@ Esta hoja documenta la entrega de la licencia de InventarioY al cliente. Se firm
 ## Condiciones
 
 1. La aplicación funciona **100% local**; no hay datos en internet.
-2. El **respaldo de los datos** es responsabilidad del cliente (ver Manual de uso, sección 6).
+2. El **respaldo de los datos** es responsabilidad del cliente (ver Manual de uso, sección 7).
 3. La licencia está ligada al **Código de Negocio**, no a la computadora: puede reinstalarse en otra PC con la misma clave.
 4. El **soporte** está incluido por el período indicado en su contrato.
 5. Las **actualizaciones** están incluidas de por vida en la licencia vitalicia; en suscripciones, mientras esté vigente la suscripción.

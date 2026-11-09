@@ -6,6 +6,7 @@ import { isDateClosed } from '../lib/dateUtils';
 import { calcularNomina } from '../utils/payrollCalculations';
 import { logger } from '../lib/logger';
 import { normalizeStr, isActive, uuid } from '../lib/utils';
+import type { ImportRow } from '../lib/importProducts';
 import { trackLocalCreation, untrackLocalCreation } from '../lib/realtimeGuard';
 
 // Versión desktop: los datos viven en el servidor local embebido (Electron).
@@ -53,6 +54,11 @@ export interface Product {
   is_recipe?: boolean;
   recipe_ingredients?: any[];
   created_at: string;
+}
+
+export interface ImportProductsResult {
+  imported: number;
+  skipped: { name: string; reason: string }[];
 }
 
 export interface Movement {
@@ -656,6 +662,7 @@ interface DatabaseState {
   fetchAll: (limit?: number) => Promise<void>;
   fetchMore: (limit?: number) => Promise<{ hasMore: boolean }>;
   addProduct: (product: Omit<Product, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => Promise<void>;
+  importProducts: (rows: ImportRow[]) => Promise<ImportProductsResult>;
   updateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
 
@@ -1231,6 +1238,140 @@ addProduct: async (product) => {
     } finally {
       untrackLocalCreation(productId);
     }
+  },
+
+  // Importación masiva de inventario (spec 005): productos + stock inicial en lotes
+  // transaccionales de 100. Omite duplicados por nombre y registra un solo log.
+  importProducts: async (rows) => {
+    const { user } = useAuthStore.getState();
+    if (!user) throw new Error('No hay usuario autenticado');
+    if (!rows.length) return { imported: 0, skipped: [] };
+
+    const warehouses = get().warehouses;
+    const mainWarehouse = warehouses.find(w => w.is_main) || warehouses[0];
+    if (!mainWarehouse) throw new Error('No hay un almacén configurado para cargar el stock');
+
+    const existingNames = new Set(
+      get().products
+        .filter(p => p.user_id === user.id && isActive(p))
+        .map(p => normalizeStr(p.name))
+    );
+
+    const skipped: { name: string; reason: string }[] = [];
+    const pending: ImportRow[] = [];
+    for (const row of rows) {
+      const key = normalizeStr(row.name);
+      if (existingNames.has(key)) {
+        skipped.push({ name: row.name, reason: 'Ya existe en el inventario' });
+        continue;
+      }
+      existingNames.add(key);
+      pending.push(row);
+    }
+
+    const now = new Date().toISOString();
+    const CHUNK_SIZE = 100;
+    let imported = 0;
+
+    try {
+      for (let start = 0; start < pending.length; start += CHUNK_SIZE) {
+        const chunk = pending.slice(start, start + CHUNK_SIZE);
+        const commands: { table: string; method: 'insert' | 'upsert'; data: any; onConflict?: string }[] = [];
+
+        for (const row of chunk) {
+          const productId = uuid();
+          commands.push({
+            table: 'products',
+            method: 'insert',
+            data: {
+              id: productId,
+              user_id: user.id,
+              name: capitalize(row.name),
+              category: capitalize(row.category),
+              quantity: row.quantity,
+              unit: row.unit,
+              price: row.price,
+              cost: row.cost,
+              rop: row.rop,
+              eoq: row.eoq,
+              lead_time: 0,
+              order_cost: 0,
+              holding_cost: 0,
+              expiration_date: row.expiration_date,
+              description: row.description || null,
+              is_individual: row.is_individual,
+              is_active: true,
+              in_transit: 0,
+              is_gasto_variable: row.is_gasto_variable,
+              is_consumo_directo: row.is_consumo_directo,
+              is_recipe: false,
+              created_at: now,
+              updated_at: now,
+            },
+          });
+
+          if (row.quantity > 0) {
+            commands.push({
+              table: 'movements',
+              method: 'insert',
+              data: {
+                id: uuid(),
+                user_id: user.id,
+                product_id: productId,
+                type: 'ENTRADA',
+                quantity: row.quantity,
+                unit: row.unit,
+                date: now,
+                cost: row.cost,
+                reason: 'Stock inicial (Importación)',
+                status: 'NORMAL',
+                warehouse_id: mainWarehouse.id,
+                created_at: now,
+              },
+            });
+          }
+
+          for (const warehouse of warehouses) {
+            commands.push({
+              table: 'product_warehouse',
+              method: 'upsert',
+              onConflict: 'product_id,warehouse_id',
+              data: {
+                id: uuid(),
+                product_id: productId,
+                warehouse_id: warehouse.id,
+                quantity: warehouse.id === mainWarehouse.id ? row.quantity : 0,
+                in_transit: 0,
+                updated_at: now,
+              },
+            });
+          }
+        }
+
+        const { error } = await localDb.batch(commands);
+        if (error) {
+          throw new Error(
+            imported > 0
+              ? `Se importaron ${imported} productos y se detuvo por un error: ${error.message}`
+              : error.message
+          );
+        }
+        imported += chunk.length;
+      }
+    } finally {
+      await get().fetchAll();
+      await get().fetchProductWarehouse();
+    }
+
+    if (imported > 0) {
+      await get().logAction('inventory', 'IMPORTAR', {
+        imported,
+        skipped: skipped.length,
+        total: rows.length,
+      });
+    }
+
+    return { imported, skipped };
   },
 
   updateProduct: async (id, updates) => {

@@ -4,11 +4,23 @@
 // Uso: node --import tsx scripts/start-test-server.mjs
 import os from 'node:os';
 import path from 'node:path';
-import { rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs';
 import { randomBytes, scryptSync } from 'node:crypto';
 
+// En algunos entornos Node/Windows `fs.rmSync({ recursive: true })` no borra
+// nada y no lanza error; se hace el borrado recursivo a mano.
+function removeDir(dir) {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const target = path.join(dir, entry.name);
+    if (entry.isDirectory()) removeDir(target);
+    else { try { unlinkSync(target); } catch { /* archivo en uso: se ignora */ } }
+  }
+  try { rmdirSync(dir); } catch { /* no vacío o en uso */ }
+}
+
 const E2E_DIR = path.join(os.tmpdir(), 'inventarioy-e2e');
-rmSync(E2E_DIR, { recursive: true, force: true });
+removeDir(E2E_DIR);
 
 const { initDatabase } = await import('../electron/db/index.ts');
 const { createServer } = await import('../electron/server/index.ts');

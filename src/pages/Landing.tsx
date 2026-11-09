@@ -35,6 +35,7 @@ const FEATURES = [
   'Menú digital QR para sus clientes',
   'Tickets de 58/80mm e impresión',
   'Exportación de datos a Excel',
+  'Importación de inventario desde Excel o CSV',
   'Multi-caja en red local (LAN)',
   '100% offline + soporte por WhatsApp',
 ];
@@ -813,9 +814,9 @@ export default function Landing() {
                 <div className="text-left md:text-right">
                   <div className="flex items-baseline gap-1.5 md:justify-end">
                     <span className="text-4xl font-extrabold text-text sm:text-5xl">
-                      {billing === 'mensual' ? '5,000' : billing === 'anual' ? '54,000' : '130,000'}
+                      {billing === 'mensual' ? '5,000' : billing === 'anual' ? '54,000' : '250'}
                     </span>
-                    <span className="font-mono text-xl font-bold text-primary">CUP</span>
+                    <span className="font-mono text-xl font-bold text-primary">{billing === 'vitalicio' ? 'USD' : 'CUP'}</span>
                   </div>
                   <span className="mt-0.5 block font-mono text-xs text-text-secondary">
                     {billing === 'mensual' ? 'por mes' : billing === 'anual' ? 'por año' : 'pago único'}
@@ -879,8 +880,9 @@ export default function Landing() {
                 { icon: Printer, color: 'text-primary', q: '¿Funciona con impresoras térmicas?', a: 'Sí, imprime tickets en impresoras térmicas de 58mm y 80mm conectadas por USB, las más comunes en Cuba.' },
                 { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribe por WhatsApp al +53 54523884, realiza el pago en CUP por transferencia o en efectivo, y recibe su clave de activación digital para su equipo. Sin trámites bancarios ni tarjetas internacionales.' },
                 { icon: Rocket, color: 'text-primary', q: '¿Cómo empiezo a usar InventarioY?', a: 'Instale la aplicación, registre su negocio con un nombre y un PIN de acceso, y tendrá 7 días de prueba gratis con todas las funciones. Con ese PIN cree accesos por rol para sus empleados.' },
+                { icon: ArrowLeftRight, color: 'text-primary', q: '¿Puedo importar mi inventario desde Excel?', a: 'Sí. En Inventario pulse "Importar inventario": descargue la plantilla, llene sus productos en Excel y guárdela como CSV (o copie y pegue las celdas directamente). La app valida cada fila, omite los duplicados y carga el stock inicial como movimiento de entrada, todo sin internet.' },
                 { icon: Users, color: 'text-success', q: '¿Puedo tener múltiples usuarios?', a: 'Sí. Cada empleado accede con su PIN de 4 dígitos y un rol (dueño, económico, admin, supervisor, dependiente). Cada rol ve solo los módulos que le corresponden.' },
-                { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 130,000 CUP en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con su clave permanente.' },
+                { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 250 USD en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con su clave permanente.' },
               ].map((f) => (
                 <div key={f.q} className="rounded-xl border border-border bg-surface p-5">
                   <h3 className="mb-2 flex items-center justify-between text-base font-bold text-text">
