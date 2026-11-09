@@ -33,6 +33,7 @@ export interface ImportPreview {
   rows: ImportRow[];
   errors: ImportRowIssue[];
   duplicates: ImportRowIssue[];
+  warnings: ImportRowIssue[];
   totalRows: number;
   fatal?: string;
 }
@@ -117,8 +118,13 @@ export function parseDelimited(text: string, delimiter: string): string[][] {
   return rows.filter(r => r.some(c => c.trim() !== ''));
 }
 
-/** Decodifica el archivo: UTF-8 y, si hay caracteres inválidos, Windows-1252 (Excel ANSI). */
+/** Decodifica el archivo: UTF-8, UTF-16 (Excel "Texto Unicode") y Windows-1252 (ANSI). */
 export function decodeImportFile(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(buffer);
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(buffer);
+  }
   const utf8 = new TextDecoder('utf-8').decode(buffer);
   if (!utf8.includes('\uFFFD')) return utf8;
   try {
@@ -171,16 +177,30 @@ export function parseImportBoolean(raw: string): boolean | null {
   return null;
 }
 
-function resolveUnit(raw: string): UnitAbbrev | null {
+/** Número con separador de miles (1,600 / 1.600 / 12.345,67) → ambigüedad. */
+function isAmbiguousNumber(raw: string): boolean {
+  const value = raw.trim().replace(/\s/g, '');
+  if (!/^-?\d[\d.,]*$/.test(value)) return false;
+  const lastComma = value.lastIndexOf(',');
+  const lastDot = value.lastIndexOf('.');
+  if (lastComma >= 0 && lastDot >= 0) return true; // dos separadores: uno es de miles
+  const sep = lastComma >= 0 ? ',' : lastDot >= 0 ? '.' : '';
+  if (!sep) return false;
+  const parts = value.split(sep);
+  return parts.length === 2 && parts[1].length === 3; // 1,600 → podría ser 1600
+}
+
+function resolveUnit(raw: string): { unit: UnitAbbrev; warning?: string } {
   const value = raw.trim();
-  if (!value) return 'u';
+  if (!value) return { unit: 'u' };
   const normalized = normalizeUnit(value);
   const valid = Object.keys(UNIT_LABELS) as UnitAbbrev[];
   // normalizeUnit cae a 'u' con valores desconocidos: comprobar el alias real.
   const known = valid.includes(normalized) && (
     normalized !== 'u' || /^(u|un|unidad|unidades|unds|u\.?)$/i.test(value)
   );
-  return known ? normalized : null;
+  if (known) return { unit: normalized };
+  return { unit: 'u', warning: `Unidad "${value}" no reconocida: se cargó como unidades (u)` };
 }
 
 /**
@@ -194,19 +214,19 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
   const table = parseDelimited(clean, delimiter);
 
   if (table.length < 2) {
-    return { rows: [], errors: [], duplicates: [], totalRows: 0, fatal: 'El archivo no contiene filas de datos.' };
+    return { rows: [], errors: [], duplicates: [], warnings: [], totalRows: 0, fatal: 'El archivo no contiene filas de datos.' };
   }
 
   const headerRow = table[0].map(h => normalizeStr(h));
   const fieldByColumn: (FieldKey | null)[] = headerRow.map(h => HEADER_ALIASES[h] ?? null);
   if (!fieldByColumn.includes('name')) {
-    return { rows: [], errors: [], duplicates: [], totalRows: 0, fatal: 'Falta la columna obligatoria "Nombre".' };
+    return { rows: [], errors: [], duplicates: [], warnings: [], totalRows: 0, fatal: 'Falta la columna obligatoria "Nombre".' };
   }
 
   const dataRows = table.slice(1);
   if (dataRows.length > MAX_IMPORT_ROWS) {
     return {
-      rows: [], errors: [], duplicates: [], totalRows: dataRows.length,
+      rows: [], errors: [], duplicates: [], warnings: [], totalRows: dataRows.length,
       fatal: `El archivo tiene ${dataRows.length} filas; el máximo por importación es ${MAX_IMPORT_ROWS}.`,
     };
   }
@@ -214,6 +234,7 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
   const rows: ImportRow[] = [];
   const errors: ImportRowIssue[] = [];
   const duplicates: ImportRowIssue[] = [];
+  const warnings: ImportRowIssue[] = [];
   const seen = new Set(existingNames.map(normalizeStr));
   const seenInFile = new Set<string>();
 
@@ -226,12 +247,13 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
 
     const name = get('name');
     const rowErrors: string[] = [];
+    const rowWarnings: string[] = [];
 
     if (!name) rowErrors.push('Falta el nombre');
     else if (name.length > 120) rowErrors.push('El nombre supera 120 caracteres');
 
-    const unit = resolveUnit(get('unit'));
-    if (unit === null) rowErrors.push(`Unidad no válida: "${get('unit')}"`);
+    const unitResult = resolveUnit(get('unit'));
+    if (unitResult.warning) rowWarnings.push(unitResult.warning);
 
     const parseAmount = (key: FieldKey, label: string): number => {
       const raw = get(key);
@@ -239,6 +261,9 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
       const value = parseImportNumber(raw);
       if (value === null) { rowErrors.push(`${label} no es un número válido: "${raw}"`); return 0; }
       if (value < 0) { rowErrors.push(`${label} no puede ser negativo`); return 0; }
+      if (isAmbiguousNumber(raw)) {
+        rowWarnings.push(`${label} "${raw}" se interpretó como ${value}; si quería miles escríbalo sin separador`);
+      }
       return value;
     };
 
@@ -270,6 +295,10 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
       return;
     }
 
+    if (rowWarnings.length > 0) {
+      warnings.push({ line, name: name || `(fila ${line})`, message: rowWarnings.join('; ') });
+    }
+
     const normalizedName = normalizeStr(name);
     if (seen.has(normalizedName)) {
       duplicates.push({
@@ -286,7 +315,7 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
       line,
       name,
       category: get('category') || 'Otros',
-      unit: unit as UnitAbbrev,
+      unit: unitResult.unit,
       quantity,
       cost,
       price,
@@ -298,7 +327,7 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
     });
   });
 
-  return { rows, errors, duplicates, totalRows: dataRows.length };
+  return { rows, errors, duplicates, warnings, totalRows: dataRows.length };
 }
 
 function escapeCsvCell(value: string): string {
@@ -318,6 +347,16 @@ export function buildErrorsCsv(issues: ImportRowIssue[]): string {
   const lines = [
     ['Fila', 'Nombre', 'Motivo'],
     ...issues.map(i => [String(i.line), i.name, i.message]),
+  ].map(row => row.map(escapeCsvCell).join(';'));
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+/** Reporte del resultado de una importación. */
+export function buildResultCsv(importedNames: string[], skipped: { name: string; reason: string }[]): string {
+  const lines = [
+    ['Resultado', 'Nombre', 'Motivo'],
+    ...importedNames.map(name => ['Importado', name, '']),
+    ...skipped.map(s => ['Omitido', s.name, s.reason]),
   ].map(row => row.map(escapeCsvCell).join(';'));
   return '\uFEFF' + lines.join('\r\n');
 }

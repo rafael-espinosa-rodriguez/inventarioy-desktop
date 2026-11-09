@@ -8,6 +8,7 @@ import { useDatabaseStore, type ImportProductsResult } from '../store/dbStore';
 import { isActive, normalizeStr } from '../lib/utils';
 import {
   buildErrorsCsv,
+  buildResultCsv,
   buildTemplateCsv,
   decodeImportFile,
   downloadTextFile,
@@ -26,6 +27,8 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
   const [fileName, setFileName] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [result, setResult] = useState<ImportProductsResult | null>(null);
+  const [importedNames, setImportedNames] = useState<string[]>([]);
+  const [skippedSnapshot, setSkippedSnapshot] = useState<{ name: string; reason: string }[]>([]);
   const [readError, setReadError] = useState('');
 
   const existingNames = useMemo(
@@ -39,13 +42,17 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
     setFileName('');
     setIsImporting(false);
     setResult(null);
+    setImportedNames([]);
+    setSkippedSnapshot([]);
     setReadError('');
   }, [isOpen]);
 
   const preview: ImportPreview | null = useMemo(() => {
-    if (!text.trim()) return null;
+    // Tras importar, el inventario cambió: se congela la vista previa y se
+    // muestra solo el resultado (evita que todo aparezca como duplicado).
+    if (!text.trim() || result) return null;
     return parseImportText(text, existingNames);
-  }, [text, existingNames]);
+  }, [text, existingNames, result]);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -67,14 +74,23 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
 
   const handleDownloadIssues = () => {
     if (!preview) return;
-    downloadTextFile('errores-importacion.csv', buildErrorsCsv([...preview.errors, ...preview.duplicates]));
+    downloadTextFile('errores-importacion.csv', buildErrorsCsv([...preview.errors, ...preview.duplicates, ...preview.warnings]));
+  };
+
+  const handleDownloadResult = () => {
+    if (!result) return;
+    downloadTextFile('resultado-importacion.csv', buildResultCsv(importedNames, [...skippedSnapshot, ...result.skipped]));
   };
 
   const handleImport = async () => {
     if (!preview || preview.rows.length === 0 || isImporting) return;
     setIsImporting(true);
     try {
+      const names = preview.rows.map(r => r.name);
+      const previewDuplicates = preview.duplicates.map(d => ({ name: d.name, reason: d.message }));
       const res = await importProducts(preview.rows);
+      setImportedNames(names);
+      setSkippedSnapshot(previewDuplicates);
       setResult(res);
       if (res.imported > 0) {
         toast.success(`${res.imported} producto${res.imported === 1 ? '' : 's'} importado${res.imported === 1 ? '' : 's'}`);
@@ -91,6 +107,7 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
   const validCount = preview?.rows.length ?? 0;
   const errorCount = preview?.errors.length ?? 0;
   const duplicateCount = preview?.duplicates.length ?? 0;
+  const warningCount = preview?.warnings.length ?? 0;
 
   return (
     <Modal
@@ -150,10 +167,13 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
               <span className="rounded bg-success/15 px-2 py-1 text-success">{validCount} válidas</span>
               <span className="rounded bg-warning/15 px-2 py-1 text-warning">{duplicateCount} duplicadas (se omiten)</span>
               <span className="rounded bg-danger/15 px-2 py-1 text-danger">{errorCount} con error</span>
+              {warningCount > 0 && (
+                <span className="rounded bg-primary/15 px-2 py-1 text-primary">{warningCount} con aviso</span>
+              )}
               <span className="text-text-secondary">de {preview.totalRows} filas</span>
-              {(errorCount > 0 || duplicateCount > 0) && (
+              {(errorCount > 0 || duplicateCount > 0 || warningCount > 0) && (
                 <button type="button" onClick={handleDownloadIssues} className="underline text-text-secondary hover:text-text">
-                  Descargar errores
+                  Descargar avisos
                 </button>
               )}
             </div>
@@ -189,10 +209,15 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
               </div>
             )}
 
-            {(errorCount > 0 || duplicateCount > 0) && (
+            {(errorCount > 0 || duplicateCount > 0 || warningCount > 0) && (
               <div className="max-h-40 space-y-1 overflow-auto rounded-xl border border-border bg-bg p-3 font-mono text-[11px]">
                 {preview.duplicates.map(issue => (
                   <div key={`dup-${issue.line}`} className="text-warning">
+                    Fila {issue.line} · {issue.name} · {issue.message}
+                  </div>
+                ))}
+                {preview.warnings.map(issue => (
+                  <div key={`warn-${issue.line}`} className="text-primary">
                     Fila {issue.line} · {issue.name} · {issue.message}
                   </div>
                 ))}
@@ -223,6 +248,12 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
           <Button type="button" variant="secondary" onClick={onClose}>
             {result ? 'Cerrar' : 'Cancelar'}
           </Button>
+          {result && (
+            <Button type="button" variant="outline" onClick={handleDownloadResult}>
+              <Download className="mr-2 h-4 w-4" />
+              Descargar resultado
+            </Button>
+          )}
           {!result && (
             <Button
               type="button"

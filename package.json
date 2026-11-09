@@ -16,7 +16,8 @@
     "electron:dev": "npm run electron:build && concurrently -k \"npm:dev\" \"npm:electron:serve\"",
     "electron:serve": "cross-env INVENTARIOY_DEV=1 electron .",
     "desktop": "npm run build && npm run electron:build && electron .",
-    "desktop:package": "npm run build && npm run electron:build && electron-builder"
+    "desktop:package": "npm run build && npm run electron:build && electron-builder",
+    "verify:import": "node --import tsx scripts/verificar-importacion-excel.mjs"
   },
   "dependencies": {
     "@fastify/static": "^10.1.2",

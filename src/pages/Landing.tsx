@@ -37,6 +37,7 @@ const FEATURES = [
   'Exportación de datos a Excel',
   'Importación de inventario desde Excel o CSV',
   'Multi-caja en red local (LAN)',
+  'Cajas en tablets y celulares por WiFi (sin instalar nada)',
   '100% offline + soporte por WhatsApp',
 ];
 
@@ -114,7 +115,7 @@ export default function Landing() {
             <a href="#features" className="transition-colors hover:text-primary">Herramientas POS</a>
             <a href="#infraestructura" className="transition-colors hover:text-primary">Infraestructura Cuba</a>
             <a href="#calculadora" className="transition-colors hover:text-primary">Simulador Mermas</a>
-            <a href="#pricing" className="transition-colors hover:text-primary">Plan CUP</a>
+            <a href="#pricing" className="transition-colors hover:text-primary">Planes</a>
             <a href="#faq" className="transition-colors hover:text-primary">Preguntas</a>
           </nav>
           <div className="flex items-center gap-2.5">
@@ -166,7 +167,7 @@ export default function Landing() {
               </a>
               <a href="#pricing" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text">
                 <DollarSign className="h-4 w-4" />
-                Plan CUP
+                Planes
               </a>
               <a href="#faq" onClick={() => setIsMobileMenuOpen(false)} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text">
                 <MessageCircle className="h-4 w-4" />
@@ -771,12 +772,12 @@ export default function Landing() {
         <section id="pricing" className="w-full border-b border-border bg-bg px-4 py-20 md:px-8">
           <div className="mx-auto max-w-4xl">
             <div className="fade-up mx-auto mb-10 max-w-xl text-center">
-              <span className="mb-2 block font-mono text-xs font-semibold uppercase tracking-widest text-primary">Tarifa simple en moneda nacional</span>
+              <span className="mb-2 block font-mono text-xs font-semibold uppercase tracking-widest text-primary">Tarifa simple, sin sorpresas</span>
               <h2 className="text-2xl font-bold tracking-tight text-text md:text-4xl">
                 Un solo plan con todo incluido
               </h2>
               <p className="mt-2 text-sm text-text-secondary">
-                Sin límites de productos ni tarifas por venta. Pago manual en CUP.
+                Sin límites de productos ni tarifas por venta. Pago manual en CUP (mensual/anual) o USD (vitalicio).
               </p>
             </div>
             <div className="fade-up mb-10 flex items-center justify-center gap-2 sm:gap-3">
@@ -878,9 +879,10 @@ export default function Landing() {
                 { icon: Zap, color: 'text-primary', q: '¿Qué pasa si se va la luz de golpe?', a: 'No pierde nada. La base de datos local trabaja en modo WAL con escritura atómica: al encender el equipo, el turno, los tickets y el stock están exactamente como quedaron. Por eso el sistema sobrevive a los apagones mejor que cualquier hoja de cálculo.' },
                 { icon: Save, color: 'text-success', q: '¿Cómo respaldo mis datos sin internet?', a: 'La aplicación guarda respaldos automáticos internos de la base de datos. Además, puede copiar manualmente el archivo de datos a una memoria USB como copia externa. Ninguna información sale a internet: es el dueño físico de sus datos.' },
                 { icon: Printer, color: 'text-primary', q: '¿Funciona con impresoras térmicas?', a: 'Sí, imprime tickets en impresoras térmicas de 58mm y 80mm conectadas por USB, las más comunes en Cuba.' },
-                { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribe por WhatsApp al +53 54523884, realiza el pago en CUP por transferencia o en efectivo, y recibe su clave de activación digital para su equipo. Sin trámites bancarios ni tarjetas internacionales.' },
+                { icon: KeyRound, color: 'text-success', q: '¿Cómo se activa la licencia después de la prueba?', a: 'Nos escribe por WhatsApp al +53 54523884, realiza el pago en CUP por transferencia o efectivo (mensual/anual) o en USD (vitalicio), y recibe su clave de activación digital para su equipo. Sin trámites bancarios ni tarjetas internacionales.' },
                 { icon: Rocket, color: 'text-primary', q: '¿Cómo empiezo a usar InventarioY?', a: 'Instale la aplicación, registre su negocio con un nombre y un PIN de acceso, y tendrá 7 días de prueba gratis con todas las funciones. Con ese PIN cree accesos por rol para sus empleados.' },
                 { icon: ArrowLeftRight, color: 'text-primary', q: '¿Puedo importar mi inventario desde Excel?', a: 'Sí. En Inventario pulse "Importar inventario": descargue la plantilla, llene sus productos en Excel y guárdela como CSV (o copie y pegue las celdas directamente). La app valida cada fila, omite los duplicados y carga el stock inicial como movimiento de entrada, todo sin internet.' },
+                { icon: ArrowLeftRight, color: 'text-primary', q: '¿Puedo usar tablets o celulares como cajas?', a: 'Sí. La PC con InventarioY hace de servidor y las tablets o celulares se conectan por el WiFi del local abriendo el navegador; no hay que instalar nada. Cada dispositivo entra con su código de negocio y PIN, se le asigna una caja y puede registrar ventas con el rol de dependiente. Requiere que la PC esté encendida y en la misma red; la impresión térmica directa está disponible en la PC.' },
                 { icon: Users, color: 'text-success', q: '¿Puedo tener múltiples usuarios?', a: 'Sí. Cada empleado accede con su PIN de 4 dígitos y un rol (dueño, económico, admin, supervisor, dependiente). Cada rol ve solo los módulos que le corresponden.' },
                 { icon: ShieldCheck, color: 'text-primary', q: '¿Existe la opción de pago único?', a: 'Sí: 250 USD en un solo pago, con licencia vitalicia y actualizaciones del producto incluidas de por vida (entrega manual, sin costo). Se solicita igual por WhatsApp y se activa con su clave permanente.' },
               ].map((f) => (

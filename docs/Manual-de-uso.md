@@ -49,9 +49,9 @@ Si ya tiene su inventario en una hoja de cálculo, no necesita escribir los prod
 
 **Consejos:**
 
-- Use **coma** para los decimales (ej.: `8,5`) y no use separador de miles.
+- Use **coma** para los decimales (ej.: `8,5`) y no use separador de miles. Si escribe `1,600`, la vista previa mostrará un **aviso** porque lo interpretará como `1.6`; para 1600 escríbalo sin separador.
 - Las fechas se aceptan como `AAAA-MM-DD` o `DD/MM/AAAA`.
-- Unidades aceptadas: g, kg, lb, oz, u (unidades), ml, L, gal, fl oz, sac (sacos) y lat (latas).
+- Unidades aceptadas: g, kg, lb, oz, u (unidades), ml, L, gal, fl oz, sac (sacos) y lat (latas). Si escribe otra (por ejemplo `caja` o `bolsa`), se cargará como **unidades (u)** y aparecerá un aviso en la vista previa.
 - Los productos cuyo nombre ya existe **no se modifican**: se omiten y se informan en el reporte.
 - Máximo **2 000 filas** por importación. Si tiene más, impórtelas por partes.
 - Haga un **respaldo** antes de una importación grande (ver punto 7).
@@ -109,6 +109,7 @@ La carpeta contiene la base de datos **`inventarioy.db`** con toda la informaci�
 - **Perdí mi clave de activación.** Comuníquese con el vendedor; puede generarle otra con la misma validez.
 - **Cambié la fecha/hora del sistema.** No lo haga: la aplicación detecta retrocesos de reloj y puede bloquearse temporalmente por seguridad.
 - **¿Necesito internet para trabajar?** No. Todo funciona local. Solo necesita el WiFi del local para que los clientes abran el menú digital con el QR.
+- **¿Puedo vender desde una tablet o un celular?** Sí, como caja adicional por el WiFi del local (ver punto 10). La PC debe estar encendida y los equipos en la misma red.
 
 ## 10. Varios puntos de venta en el mismo local (Multi-caja)
 
@@ -117,6 +118,18 @@ Si su negocio tiene más de una caja o punto de venta, puede instalar Inventario
 - Las cajas/puntos de venta se administran en **Configuración → Cajas / Puntos de Venta**.
 - En el panel lateral, el selector **"Caja activa"** indica desde qué caja se está vendiendo en ese momento.
 - Los **Cierres de Caja** pueden filtrarse por caja para conciliar cada punto de venta por separado.
+
+### Tablets y celulares como cajas
+
+También puede usar **tablets o celulares** como cajas, sin instalar nada en ellos:
+
+1. Mantenga la PC con InventarioY **encendida** y conectada al WiFi del local.
+2. Permita el acceso de InventarioY en el **Firewall de Windows** (red privada) la primera vez.
+3. En la tablet o celular, abra el navegador y entre a `http://<IP-de-la-PC>:4173` (la IP se la puede indicar el vendedor).
+4. Entre con el **código de negocio** y el **PIN** del empleado; elija su **Caja activa** en el menú lateral.
+5. Cada dependiente debe tener un PIN con rol de **Dependiente** para que solo vea el módulo **Ventas**.
+
+**Importante:** la tablet/celular necesita la PC encendida y en la misma red (no funciona por internet ni con la PC apagada). La impresión térmica directa está disponible en la PC; desde una tablet o celular solo se puede imprimir con el diálogo del navegador hacia una impresora compartida.
 
 ## 11. Turnos (doble cierre de caja)
 
