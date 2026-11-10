@@ -1,4 +1,4 @@
-# Tasks 006 — Cierre pre-venta
+# Tasks 007 — Cierre pre-venta
 
 - [x] T1: Landing coherente (CUP/USD, "Planes", bullet y FAQ de tablets).
 - [x] T2: Importación con avisos (unidad desconocida → `u`, números ambiguos).

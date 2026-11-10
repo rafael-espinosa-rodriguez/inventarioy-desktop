@@ -1,4 +1,4 @@
-# Spec 006 — Cierre pre-venta (coherencia de precios + endurecer importación)
+# Spec 007 — Cierre pre-venta (coherencia de precios + endurecer importación)
 
 > **Estado: cerrado (2026-10-09)** — implementado; suite 36/36 + verify:import en verde.
 

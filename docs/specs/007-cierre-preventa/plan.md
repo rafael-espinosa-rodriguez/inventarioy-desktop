@@ -1,4 +1,4 @@
-# Plan 006 — Cierre pre-venta
+# Plan 007 — Cierre pre-venta
 
 Referencia `spec.md` (R1-R9).
 
