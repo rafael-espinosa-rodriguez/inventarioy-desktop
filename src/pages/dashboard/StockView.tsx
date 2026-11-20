@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Trash2, Filter, Pencil, X, Settings2, Scale, Printer, ChevronLeft, ChevronRight, Package, Bell } from 'lucide-react';
+import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, Trash2, Filter, Pencil, X, Settings2, Scale, Printer, FileDown, ChevronLeft, ChevronRight, Package, Bell } from 'lucide-react';
 import { useDatabaseStore } from '../../store/dbStore';
 import { localDb } from '../../lib/db/localClient';
 import { Input } from '../../components/ui/input';
@@ -7,7 +7,7 @@ import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { validateNumber, exportToExcel, isActive } from '../../lib/utils';
+import { validateNumber, exportToExcel, exportReportPdf, isActive } from '../../lib/utils';
 import { normalizeUnit, getCompatibleUnits, convertUnit, type UnitAbbrev } from '../../lib/unitConversion';
 import { formatNumber } from '../../lib/formatNumber';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
@@ -439,6 +439,36 @@ export default function StockView() {
             >
               <Printer className="h-4 w-4" />
               Exportar
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              title="Exportar inventario a PDF"
+              onClick={() => {
+                const rows = filteredProducts.map(p => {
+                  const warehouseStock = getStockForWarehouse(p.id);
+                  const quantity = warehouseStock ? warehouseStock.quantity : Number(p.quantity);
+                  const inTransit = warehouseStock ? warehouseStock.in_transit : Number(p.in_transit || 0);
+                  return [
+                    p.name,
+                    p.category || '',
+                    formatNumber(quantity, 2) || '0',
+                    formatNumber(inTransit, 2) || '0',
+                    formatNumber(Number(p.cost) || 0, 2) || '0',
+                    formatNumber(quantity * (Number(p.cost) || 0), 2) || '0',
+                    p.unit || '',
+                  ];
+                });
+                exportReportPdf(
+                  'Inventario',
+                  ['Producto', 'Categoría', 'Disponible', 'En tránsito', 'Costo', 'Valor', 'Unidad'],
+                  rows
+                );
+              }}
+            >
+              <FileDown className="h-4 w-4" />
+              PDF
             </Button>
           </div>
         </div>

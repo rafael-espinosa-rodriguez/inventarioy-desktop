@@ -17,8 +17,26 @@ import {
   UnitAbbrev,
   UNIT_LABELS,
 } from '../../lib/unitConversion';
-import { validateNumber, normalizeStr, isActive } from '../../lib/utils';
+import { validateNumber, normalizeStr, isActive, uuid } from '../../lib/utils';
 import { useRealTimeClock } from '../../lib/hooks/useRealTimeClock';
+import { localDb } from '../../lib/db/localClient';
+
+async function compressImage(file: File): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const max = 800;
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b || file), 'image/jpeg', 0.8));
+  } catch {
+    return file;
+  }
+}
 
 const DEFAULT_CATEGORIES = [
   "Bebidas y Refrescos",
@@ -76,7 +94,38 @@ export default function InventoryView() {
     lead_time: 0,
     order_cost: 0,
     holding_cost: 0,
+    sku: '',
+    barcode: '',
+    photo_path: '',
   });
+
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState('');
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+
+  const handlePhotoChange = async (file: File | undefined) => {
+    if (!file) return;
+    const blob = await compressImage(file);
+    const compressed = new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+    setPhotoFile(compressed);
+    setPhotoPreview(URL.createObjectURL(compressed));
+  };
+
+  const uploadProductPhoto = async (): Promise<string | undefined> => {
+    if (!photoFile) return undefined;
+    const fileName = `${uuid()}.jpg`;
+    setIsUploadingPhoto(true);
+    try {
+      const { error } = await localDb.storage.from('products').upload(fileName, photoFile, { upsert: true });
+      if (error) {
+        toast.error('No se pudo subir la foto: ' + error.message);
+        return undefined;
+      }
+      return `products/${fileName}`;
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
 
   const [movement, setMovement] = useState({
     type: 'ENTRADA' as 'ENTRADA' | 'SALIDA' | 'MERMA',
@@ -133,8 +182,12 @@ export default function InventoryView() {
     }
     
     try {
+      const photoPath = await uploadProductPhoto();
       await addProduct({
         ...newProduct,
+        sku: newProduct.sku.trim() || undefined,
+        barcode: newProduct.barcode.trim() || undefined,
+        photo_path: photoPath,
         is_active: true,
       });
       
@@ -142,7 +195,9 @@ export default function InventoryView() {
         product_name: newProduct.name,
         category: newProduct.category,
         quantity: newProduct.quantity,
-        unit: newProduct.unit
+        unit: newProduct.unit,
+        sku: newProduct.sku || null,
+        barcode: newProduct.barcode || null,
       });
       
       setNewProduct({
@@ -150,7 +205,10 @@ export default function InventoryView() {
         rop: 0, eoq: 0, expiration_date: '', description: '', is_individual: false,
         is_consumo_directo: false, is_gasto_variable: false,
         lead_time: 0, order_cost: 0, holding_cost: 0,
+        sku: '', barcode: '', photo_path: '',
       });
+      setPhotoFile(null);
+      setPhotoPreview('');
       setIsCustomCategory(false);
       toast.success('Producto agregado exitosamente');
     } catch (error: any) {
@@ -387,6 +445,43 @@ export default function InventoryView() {
                     </Button>
                   </div>
                 )}
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="sku">SKU / Código interno</Label>
+                <Input
+                  id="sku"
+                  placeholder="Ej: BEB-001"
+                  value={newProduct.sku}
+                  onChange={e => setNewProduct({ ...newProduct, sku: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="barcode">Código de barras</Label>
+                <Input
+                  id="barcode"
+                  placeholder="Escanee o escriba el código"
+                  value={newProduct.barcode}
+                  onChange={e => setNewProduct({ ...newProduct, barcode: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="photo">Foto del producto (opcional)</Label>
+                <Input
+                  id="photo"
+                  type="file"
+                  accept="image/*"
+                  onChange={e => handlePhotoChange(e.target.files?.[0])}
+                />
+                {photoPreview && (
+                  <img src={photoPreview} alt="Vista previa" className="h-20 w-20 rounded-lg border border-border object-cover" />
+                )}
+                {isUploadingPhoto && <p className="text-xs text-text-secondary">Subiendo foto…</p>}
               </div>
             </div>
 

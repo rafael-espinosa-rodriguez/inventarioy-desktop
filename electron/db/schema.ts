@@ -771,6 +771,77 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     DROP TABLE IF EXISTS invoices;
     `,
   },
+  {
+    version: 17,
+    description: 'Paridad POS (spec 008): SKU/codigo/foto, descuento por item, devoluciones, anulacion y movimientos de caja',
+    sql: `
+    -- Catalogo: codigo interno, codigo de barras y foto local.
+    ALTER TABLE products ADD COLUMN sku TEXT;
+    ALTER TABLE products ADD COLUMN barcode TEXT;
+    ALTER TABLE products ADD COLUMN photo_path TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sku_user
+      ON products(user_id, sku) WHERE sku IS NOT NULL AND sku <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_user
+      ON products(user_id, barcode) WHERE barcode IS NOT NULL AND barcode <> '';
+
+    -- Descuento/recargo por item (ademas del descuento global de la venta).
+    ALTER TABLE sale_items ADD COLUMN discount REAL DEFAULT 0;
+    ALTER TABLE sale_items ADD COLUMN discount_reason TEXT;
+
+    -- Anulacion de ventas con auditoria (no se borra la venta).
+    ALTER TABLE sales ADD COLUMN voided_at TEXT;
+    ALTER TABLE sales ADD COLUMN void_reason TEXT;
+    ALTER TABLE sales ADD COLUMN voided_by TEXT;
+
+    -- Devoluciones de venta (totales o parciales) con reposicion por item.
+    CREATE TABLE IF NOT EXISTS sale_returns (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      sale_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      total REAL DEFAULT 0,
+      reason TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sale_returns_user ON sale_returns(user_id);
+    CREATE INDEX IF NOT EXISTS idx_sale_returns_sale ON sale_returns(sale_id);
+
+    CREATE TABLE IF NOT EXISTS sale_return_items (
+      id TEXT PRIMARY KEY,
+      return_id TEXT NOT NULL,
+      sale_item_id TEXT,
+      product_id TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit_price REAL DEFAULT 0,
+      subtotal REAL DEFAULT 0,
+      restock INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sale_return_items_return ON sale_return_items(return_id);
+
+    -- Movimientos de caja del turno: fondo inicial, retiros, ingresos y propinas.
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      note TEXT,
+      register_id TEXT,
+      shift TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cash_movements_user ON cash_movements(user_id);
+    CREATE INDEX IF NOT EXISTS idx_cash_movements_date ON cash_movements(date);
+
+    -- Cierre: fondo inicial, retiros y propinas (informativas) del turno.
+    ALTER TABLE daily_closings ADD COLUMN opening_cash REAL DEFAULT 0;
+    ALTER TABLE daily_closings ADD COLUMN withdrawals REAL DEFAULT 0;
+    ALTER TABLE daily_closings ADD COLUMN tips REAL DEFAULT 0;
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {

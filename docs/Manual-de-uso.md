@@ -43,7 +43,7 @@ Si ya tiene su inventario en una hoja de cálculo, no necesita escribir los prod
 1. Vaya a **Inventario** y pulse **"Importar inventario"**.
 2. Pulse **"Descargar plantilla"**: se descarga `plantilla-inventario.csv`, que puede abrir en Excel.
 3. Llene una fila por producto. Solo el **Nombre** es obligatorio; puede completar categoría, unidad, cantidad, costo, precio, stock mínimo (ROP), EOQ, vencimiento y descripción. Las columnas **Individual**, **Gasto variable** y **Consumo directo** se responden con **Sí** o **No**.
-4. Guarde el archivo como **CSV** y súbalo con el selector de archivo.
+4. Guarde el archivo como **CSV** o súbalo directamente como **Excel (.xlsx)** con el selector de archivo.
 5. Revise la **vista previa**: verá las filas válidas, las duplicadas (se omiten) y las que tienen error con su motivo.
 6. Pulse **Importar**: los productos se crean con su **stock inicial** registrado como movimiento de entrada.
 
@@ -139,7 +139,20 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 - Las ventas se clasifican automáticamente en el turno que corresponda según la hora en que se realizan; no hace falta seleccionar el turno al vender.
 - En **Cierres de Caja** podrá cerrar cada turno por separado y consultar el desglose de cada uno.
 
-## 12. Soporte y actualizaciones
+## 12. Punto de venta: códigos, descuentos, devoluciones y caja
+
+**Códigos y fotos:** en **Inventario** puede guardar un SKU, un código de barras y una foto del producto. En **Ventas**, un lector USB o Bluetooth en modo teclado agrega el producto al carrito al escanear; también puede usar el botón de cámara (en la PC) o buscar por código.
+
+**Descuento por ítem:** en el carrito escriba el descuento en CUP y su motivo. El total y el ticket lo reflejan.
+
+**Devoluciones:** en **Cierre de Caja → Ventas del turno**, pulse el icono de devolución, elija las cantidades y si el producto **vuelve al stock** o se registra como **merma**.
+
+**Anulación:** el icono de anulación (dueño/supervisor) pide un motivo obligatorio; repone el stock y la venta deja de contar en totales y cierres.
+
+**Caja del turno:** en el cierre indique **fondo inicial**, **retiros**, **ingresos** y **propinas**. El "Total en Caja" se calcula con esos movimientos; las propinas se muestran aparte.
+
+**PDF:** los botones **PDF** de Ventas, Cierres, Inventario y Movimientos permiten imprimir o guardar el reporte.
+## 13. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).
 - **Actualizaciones:** la licencia **vitalicia** incluye actualizaciones de la aplicación. Las suscripciones mensuales incluyen actualizaciones mientras estén vigentes.

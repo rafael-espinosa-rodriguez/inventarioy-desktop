@@ -150,3 +150,43 @@ export function uuid(): string {
 }
 
 export const exportToExcel = exportToCSV;
+
+// Reporte imprimible / PDF usando la impresión del sistema (sin red, sin librerías).
+export function exportReportPdf(
+  title: string,
+  columns: string[],
+  rows: (string | number)[][],
+  subtitle?: string
+): void {
+  const escape = (value: string | number) =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+  const head = columns.map(c => `<th>${escape(c)}</th>`).join('');
+  const body = rows
+    .map(r => `<tr>${r.map(c => `<td>${escape(c)}</td>`).join('')}</tr>`)
+    .join('');
+
+  const win = window.open('', '_blank', 'width=900,height=700');
+  if (!win) return;
+  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8" />
+    <title>${escape(title)}</title>
+    <style>
+      body { font-family: Arial, Helvetica, sans-serif; padding: 24px; color: #111; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      p.sub { margin: 0 0 16px; color: #555; font-size: 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border: 1px solid #bbb; padding: 6px 8px; text-align: left; }
+      th { background: #f1f1f1; }
+      tr:nth-child(even) td { background: #fafafa; }
+      @media print { body { padding: 0; } }
+    </style></head><body>
+    <h1>${escape(title)}</h1>
+    ${subtitle ? `<p class="sub">${escape(subtitle)}</p>` : ''}
+    <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+    <script>window.onload = function () { window.print(); };</script>
+    </body></html>`);
+  win.document.close();
+}

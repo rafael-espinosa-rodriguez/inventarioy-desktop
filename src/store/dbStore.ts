@@ -53,6 +53,9 @@ export interface Product {
   is_consumo_directo?: boolean;
   is_recipe?: boolean;
   recipe_ingredients?: any[];
+  sku?: string;
+  barcode?: string;
+  photo_path?: string;
   created_at: string;
 }
 
@@ -121,6 +124,8 @@ export interface Sale {
     unit_cost: number;
     selling_price: number;
     subtotal: number;
+    discount?: number;
+    discount_reason?: string | null;
     is_recipe?: boolean;
     recipe_snapshot?: {
       name: string;
@@ -145,6 +150,9 @@ export interface Sale {
   subtotal?: number;
   register_id?: string | null;
   shift?: string;
+  voided_at?: string | null;
+  void_reason?: string | null;
+  voided_by?: string | null;
   created_at: string;
 }
 
@@ -342,6 +350,22 @@ export interface DailyClosing {
   sales_count?: number;
   register_id?: string | null;
   shift?: string;
+  opening_cash?: number;
+  withdrawals?: number;
+  tips?: number;
+}
+
+export interface CashMovement {
+  id: string;
+  user_id: string;
+  date: string;
+  type: 'APERTURA' | 'RETIRO' | 'INGRESO' | 'PROPINA';
+  amount: number;
+  note?: string | null;
+  register_id?: string | null;
+  shift?: string | null;
+  created_by?: string | null;
+  created_at: string;
 }
 
 export interface HRDocument {
@@ -675,6 +699,13 @@ interface DatabaseState {
   registerManualConsumption: (transitItemId: string, quantity: number, note?: string) => Promise<{ success: boolean; error?: string }>;
 
   addSale: (sale: Omit<Sale, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; saleId?: string; error?: string }>;
+  voidSale: (saleId: string, reason: string) => Promise<{ success: boolean; error?: string }>;
+  returnSale: (
+    saleId: string,
+    items: { sale_item_id: string; quantity: number; restock: boolean }[],
+    reason: string
+  ) => Promise<{ success: boolean; total?: number; error?: string }>;
+  addCashMovement: (movement: Omit<CashMovement, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
 
   addRecipe: (recipe: Omit<Recipe, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   updateRecipe: (id: string, updates: Partial<Recipe>) => Promise<void>;
@@ -1299,6 +1330,8 @@ addProduct: async (product) => {
               holding_cost: 0,
               expiration_date: row.expiration_date,
               description: row.description || null,
+              sku: row.sku || null,
+              barcode: row.barcode || null,
               is_individual: row.is_individual,
               is_active: true,
               in_transit: 0,
@@ -2110,6 +2143,8 @@ addProduct: async (product) => {
         unit_cost: item.unit_cost,
         selling_price: item.selling_price,
         subtotal: item.subtotal,
+        discount: item.discount || 0,
+        discount_reason: item.discount_reason || null,
         is_recipe: item.is_recipe || false,
         recipe_snapshot: item.recipe_snapshot,
       }));
@@ -2179,6 +2214,51 @@ const saleId = uuid();
       return { success: false, error: error.message || 'Error al registrar la venta' };
     } finally {
       untrackLocalCreation(saleId);
+    }
+  },
+
+  voidSale: async (saleId, reason) => {
+    try {
+      const { data, error } = await localDb.rpc('void_sale', { sale_id: saleId, reason });
+      if (error || !data?.success) {
+        return { success: false, error: error?.message || (data as any)?.error || 'No se pudo anular la venta' };
+      }
+      await get().forceRefreshData().catch(() => {});
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en voidSale:', error);
+      return { success: false, error: error?.message || 'Error al anular la venta' };
+    }
+  },
+
+  returnSale: async (saleId, items, reason) => {
+    try {
+      const { data, error } = await localDb.rpc('sale_return', { sale_id: saleId, items, reason });
+      if (error || !data?.success) {
+        return { success: false, error: error?.message || (data as any)?.error || 'No se pudo registrar la devolución' };
+      }
+      await get().forceRefreshData().catch(() => {});
+      return { success: true, total: Number((data as any)?.total) || 0 };
+    } catch (error: any) {
+      logger.error('Error en returnSale:', error);
+      return { success: false, error: error?.message || 'Error al registrar la devolución' };
+    }
+  },
+
+  addCashMovement: async (movement) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No hay usuario autenticado' };
+    try {
+      const { error } = await localDb.from('cash_movements').insert({
+        ...movement,
+        user_id: user.id,
+        created_at: new Date().toISOString(),
+      });
+      if (error) return { success: false, error: error.message };
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en addCashMovement:', error);
+      return { success: false, error: error?.message || 'Error al registrar el movimiento de caja' };
     }
   },
 

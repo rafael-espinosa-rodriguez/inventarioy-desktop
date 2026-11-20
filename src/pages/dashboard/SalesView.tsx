@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useDatabaseStore } from '../../store/dbStore';
 import { useAuthStore } from '../../store/authStore';
-import { Plus, Minus, Trash2, ShoppingCart, CreditCard, Search, X, DollarSign, User, PlusCircle, Users, Loader2, Printer, AlertCircle, ChevronDown, Info } from 'lucide-react';
+import { Plus, Minus, Trash2, ShoppingCart, CreditCard, Search, X, DollarSign, User, PlusCircle, Users, Loader2, Printer, AlertCircle, ChevronDown, Info, ScanLine, Camera, Undo2, Ban, FileDown } from 'lucide-react';
+import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { NumberInput } from '../../components/ui/NumberInput';
 import { toast } from 'sonner';
-import { validateNumber, getNumberFromString, exportToExcel, isActive } from '../../lib/utils';
+import { validateNumber, getNumberFromString, exportToExcel, exportReportPdf, isActive } from '../../lib/utils';
 import { isDateClosed } from '../../lib/dateUtils';
 import { localDb } from '../../lib/db/localClient';
 import { convertUnit, getCompatibleUnits, getUnitType, normalizeUnit, UNIT_LABELS, type UnitAbbrev } from '../../lib/unitConversion';
@@ -65,7 +66,7 @@ function getUnitMin(unit: string | undefined, isRecipe?: boolean): number {
 
 export default function SalesView() {
   const { user } = useAuthStore();
-  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, addSale, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData } = useDatabaseStore();
+  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, addSale, voidSale, returnSale, addCashMovement, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData } = useDatabaseStore();
   
   const activeProducts = products.filter(isActive);
 
@@ -87,6 +88,22 @@ export default function SalesView() {
   const [discount, setDiscount] = useState(0);
   const [notes, setNotes] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+
+  // Spec 008: escaneo, devoluciones/anulación y movimientos de caja.
+  const [showScanner, setShowScanner] = useState(false);
+  const scannerVideoRef = useRef<HTMLVideoElement>(null);
+  const scannerControlsRef = useRef<any>(null);
+  const scanBufferRef = useRef('');
+  const scanTimerRef = useRef<any>(null);
+  const [voidTarget, setVoidTarget] = useState<any>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [returnTarget, setReturnTarget] = useState<any>(null);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnItems, setReturnItems] = useState<{ sale_item_id: string; name: string; max: number; quantity: number; restock: boolean }[]>([]);
+  const [openingCash, setOpeningCash] = useState(0);
+  const [cashWithdrawals, setCashWithdrawals] = useState(0);
+  const [cashDeposits, setCashDeposits] = useState(0);
+  const [cashTips, setCashTips] = useState(0);
   const [showClosingModal, setShowClosingModal] = useState(false);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketData, setTicketData] = useState<any>(null);
@@ -293,6 +310,7 @@ export default function SalesView() {
     const saleDate = new Date(s.date).toISOString().split('T')[0];
     if (saleDate !== closingDate) return false;
     if (s.is_account_house) return false;
+    if (s.voided_at) return false;
     if (doubleShiftEnabled && (s.shift || '1') !== targetShift) return false;
     return true;
   });
@@ -302,7 +320,7 @@ export default function SalesView() {
 
   const todayTotal = todaySales.reduce((sum, s) => sum + (Number(s.total_amount) || 0), 0);
   const todayDiscounts = todaySales.reduce((sum, s) => sum + (Number(s.discount) || 0), 0);
-  const todayRefunds = 0;
+  const [todayRefunds, setTodayRefunds] = useState(0);
 
   // Para VENDER se evalúa el turno actual; para el cierre, el turno objetivo.
   const isSellingBlocked = doubleShiftEnabled
@@ -334,13 +352,77 @@ export default function SalesView() {
     exportToExcel(columns, data, `ventas_${new Date().toISOString().split('T')[0]}`);
   };
 
+  const handleExportSalesPdf = () => {
+    const rows = todaySales.map(s => [
+      new Date(s.date).toLocaleString('es-ES'),
+      s.sale_type,
+      (Number(s.total_amount) || 0).toFixed(2),
+      (Number(s.discount) || 0).toFixed(2),
+      s.payment_method || '',
+    ]);
+    exportReportPdf(
+      'Ventas del día',
+      ['Fecha', 'Tipo', 'Total', 'Descuento', 'Método de pago'],
+      rows,
+      closingDate
+    );
+  };
+
+  const openReturnModal = (sale: any) => {
+    setReturnTarget(sale);
+    setReturnReason('');
+    setReturnItems((sale.items || []).map((it: any) => ({
+      sale_item_id: it.id,
+      name: it.product_name || products.find(p => p.id === it.product_id)?.name || 'Producto',
+      max: Number(it.quantity) || 0,
+      quantity: Number(it.quantity) || 0,
+      restock: true,
+    })));
+  };
+
+  const confirmReturn = async () => {
+    if (!returnTarget) return;
+    const items = returnItems
+      .filter(i => i.quantity > 0)
+      .map(i => ({ sale_item_id: i.sale_item_id, quantity: i.quantity, restock: i.restock }));
+    if (items.length === 0) {
+      toast.error('Seleccione al menos un ítem a devolver');
+      return;
+    }
+    const res = await returnSale(returnTarget.id, items, returnReason);
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo registrar la devolución');
+      return;
+    }
+    toast.success(`Devolución registrada ($${(res.total || 0).toFixed(2)})`);
+    setReturnTarget(null);
+    setShowClosingModal(false);
+  };
+
+  const confirmVoid = async () => {
+    if (!voidTarget) return;
+    if (!voidReason.trim()) {
+      toast.error('El motivo de anulación es obligatorio');
+      return;
+    }
+    const res = await voidSale(voidTarget.id, voidReason.trim());
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo anular la venta');
+      return;
+    }
+    toast.success('Venta anulada y stock repuesto');
+    setVoidTarget(null);
+    setShowClosingModal(false);
+  };
+
   const openClosingModal = () => {
     const items = todaySales.map(s => ({
       id: s.id,
       total: Number(s.total_amount) || 0,
       discount: Number(s.discount) || 0,
       saleType: s.sale_type,
-      date: s.created_at
+      date: s.created_at,
+      items: (s as any).items || []
     }));
     
     // Calcular desglose de monedas desde las ventas del día
@@ -389,10 +471,30 @@ export default function SalesView() {
     });
     
     setClosingSales(items);
-    setClosingAmount(todayTotal - todayDiscounts);
+    setClosingAmount(todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits);
     setClosingNotes('');
     setShowClosingModal(true);
   };
+
+  // Recalcular el efectivo esperado al cambiar fondo/retiros/ingresos/devoluciones.
+  useEffect(() => {
+    setClosingAmount(todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits);
+  }, [todayTotal, todayDiscounts, todayRefunds, openingCash, cashWithdrawals, cashDeposits]);
+
+  // Devoluciones del día (para el cierre).
+  useEffect(() => {
+    if (!showClosingModal) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await localDb.from('sale_returns').select('*').eq('user_id', user?.id || 'owner');
+      if (cancelled) return;
+      const sum = (data || [])
+        .filter((r: any) => String(r.date).slice(0, 10) === closingDate)
+        .reduce((acc: number, r: any) => acc + Number(r.total || 0), 0);
+      setTodayRefunds(sum);
+    })();
+    return () => { cancelled = true; };
+  }, [showClosingModal, closingDate, user?.id]);
   
   // Función helper para parsear payment_method legacy (ventas históricas)
   const parsePaymentMethodLegacy = (paymentMethod: string | null | undefined) => {
@@ -431,7 +533,7 @@ export default function SalesView() {
       const usdConverted = user?.usdEnabled ? currencyBreakdown.usd * (user?.usdRate || 0) : 0;
       const eurConverted = user?.eurEnabled ? currencyBreakdown.eur * (user?.eurRate || 0) : 0;
       const totalBreakdown = currencyBreakdown.cupEfectivo + currencyBreakdown.cupTransfer + usdConverted + eurConverted;
-      const expectedTotal = todayTotal - todayDiscounts;
+      const expectedTotal = todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits;
       
       if (Math.abs(totalBreakdown - expectedTotal) > 1) {
         setClosingWarningData({
@@ -462,14 +564,40 @@ export default function SalesView() {
         usd: currencyBreakdown.usd,
         eur: currencyBreakdown.eur,
         sales_count: todaySales.length,
+        opening_cash: openingCash,
+        withdrawals: cashWithdrawals,
+        tips: cashTips,
       });
       if (result.success) {
+        const cashMovements = [
+          openingCash > 0 ? { type: 'APERTURA' as const, amount: openingCash, note: 'Fondo inicial del turno' } : null,
+          cashWithdrawals > 0 ? { type: 'RETIRO' as const, amount: cashWithdrawals, note: 'Retiro de caja' } : null,
+          cashDeposits > 0 ? { type: 'INGRESO' as const, amount: cashDeposits, note: 'Ingreso de caja' } : null,
+          cashTips > 0 ? { type: 'PROPINA' as const, amount: cashTips, note: 'Propinas del turno' } : null,
+        ].filter(Boolean) as { type: 'APERTURA' | 'RETIRO' | 'INGRESO' | 'PROPINA'; amount: number; note: string }[];
+        for (const movement of cashMovements) {
+          await addCashMovement({
+            date: new Date().toISOString(),
+            type: movement.type,
+            amount: movement.amount,
+            note: movement.note,
+            shift: targetShift,
+            register_id: null,
+          });
+        }
+        setOpeningCash(0);
+        setCashWithdrawals(0);
+        setCashDeposits(0);
+        setCashTips(0);
         await logAction('closings', 'CREAR', {
           closing_date: closingDate,
           total_sales: todayTotal,
           total_discounts: todayDiscounts,
           total_refunds: todayRefunds,
           closing_amount: closingAmount,
+          opening_cash: openingCash,
+          withdrawals: cashWithdrawals,
+          tips: cashTips,
           created_by_name: selectedEmployee ? selectedEmployee.name : user.name,
         });
         toast.success(doubleShiftEnabled ? `Cierre de ${closingDate} · Turno ${targetShift} registrado` : `Cierre de caja del ${closingDate} registrado`);
@@ -494,6 +622,8 @@ export default function SalesView() {
     quantity: number;
     price: number;
     cost: number;
+    discount?: number;
+    discount_reason?: string;
     unit: string;
     displayUnit?: string;
     is_recipe?: boolean;
@@ -565,9 +695,11 @@ export default function SalesView() {
     })
   ];
 
-  const filteredProducts = catalogItems.filter(item => 
+  const filteredProducts = catalogItems.filter(item =>
     item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (item.category && item.category.toLowerCase().includes(searchTerm.toLowerCase()))
+    (item.category && item.category.toLowerCase().includes(searchTerm.toLowerCase())) ||
+    String((item as any).sku || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    String((item as any).barcode || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const addToCart = (item: any) => {
@@ -600,6 +732,74 @@ export default function SalesView() {
     });
   };
 
+  const handleScanCode = (raw: string) => {
+    const code = raw.trim().toLowerCase();
+    if (!code) return;
+    const item = catalogItems.find((p: any) =>
+      String(p.barcode || '').toLowerCase() === code || String(p.sku || '').toLowerCase() === code
+    );
+    if (!item) {
+      toast.error(`Código no encontrado: ${raw}`);
+      return;
+    }
+    addToCart(item);
+    toast.success(`Agregado: ${item.name}`);
+  };
+
+  // Lector USB/Bluetooth en modo teclado: acumula pulsaciones rápidas y busca al Enter.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+      if (e.key === 'Enter') {
+        const code = scanBufferRef.current.trim();
+        scanBufferRef.current = '';
+        if (code.length >= 3) {
+          e.preventDefault();
+          handleScanCode(code);
+        }
+        return;
+      }
+      if (e.key.length === 1) {
+        scanBufferRef.current += e.key;
+        clearTimeout(scanTimerRef.current);
+        scanTimerRef.current = setTimeout(() => { scanBufferRef.current = ''; }, 150);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      clearTimeout(scanTimerRef.current);
+    };
+  }, [catalogItems]);
+
+  useEffect(() => {
+    if (!showScanner) return;
+    let cancelled = false;
+    const reader = new BrowserMultiFormatReader();
+    (async () => {
+      try {
+        const controls = await reader.decodeFromVideoDevice(undefined, scannerVideoRef.current!, (result) => {
+          if (result && !cancelled) {
+            try { controls.stop(); } catch { /* ignore */ }
+            setShowScanner(false);
+            handleScanCode(result.getText());
+          }
+        });
+        scannerControlsRef.current = controls;
+      } catch {
+        toast.error('No se pudo abrir la cámara. En tablets por LAN se requiere HTTPS; use un lector USB.');
+        setShowScanner(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { scannerControlsRef.current?.stop(); } catch { /* ignore */ }
+      scannerControlsRef.current = null;
+    };
+  }, [showScanner]);
+
   const updateQuantity = (product_id: string, delta: number) => {
     setCart(current => current.map(item => {
       if (item.product_id === product_id) {
@@ -614,8 +814,7 @@ export default function SalesView() {
   };
 
   const removeFromCart = (product_id: string) => {
-    setCart(current => current.filter(item => item.product_id !== product_id));
-    setRawInputValues(prev => {
+    setCart(current => current.filter(item => item.product_id !== product_id));    setRawInputValues(prev => {
       const next = { ...prev };
       delete next[product_id];
       return next;
@@ -670,7 +869,9 @@ export default function SalesView() {
     ));
   };
 
-  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const itemNet = (item: { price: number; quantity: number; discount?: number }) =>
+    Math.max(0, item.price * item.quantity - (Number(item.discount) || 0));
+  const subtotal = cart.reduce((sum, item) => sum + itemNet(item), 0);
   const total = Math.max(0, subtotal - Math.min(discount, subtotal));
 
   const handleCheckout = () => {
@@ -763,7 +964,9 @@ export default function SalesView() {
           quantity: item.quantity,
           unit_cost: item.cost,
           selling_price: item.price,
-          subtotal: item.price * item.quantity,
+          subtotal: itemNet(item),
+          discount: Number(item.discount) || 0,
+          discount_reason: item.discount_reason || null,
           is_recipe: item.is_recipe,
           recipe_snapshot: item.recipe_snapshot
         })),
@@ -793,7 +996,7 @@ export default function SalesView() {
         name: item.name,
         quantity: item.quantity,
         unitPrice: item.price,
-        subtotal: item.price * item.quantity
+        subtotal: itemNet(item)
       }));
 
       // Limpiar estados de venta exitosa
@@ -918,6 +1121,16 @@ setShowTicket(true);
             <Button
               variant="outline"
               size="sm"
+              onClick={handleExportSalesPdf}
+              className="gap-2"
+              title="Exportar ventas a PDF"
+            >
+              <FileDown className="h-4 w-4" />
+              PDF
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={openClosingModal}
               disabled={todaySales.length === 0 || isTargetClosed}
               className="gap-2"
@@ -935,8 +1148,29 @@ setShowTicket(true);
             placeholder="Buscar producto para vender..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-9"
+            className="pl-9 pr-24"
           />
+          <div className="absolute right-5 top-1/2 flex -translate-y-1/2 gap-1">
+            <button
+              type="button"
+              onClick={() => setShowScanner(true)}
+              className="rounded-lg border border-border bg-bg p-1.5 text-text-secondary hover:text-primary"
+              title="Escanear con cámara"
+            >
+              <Camera className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const code = window.prompt('Código de barras o SKU:');
+                if (code) handleScanCode(code);
+              }}
+              className="rounded-lg border border-border bg-bg p-1.5 text-text-secondary hover:text-primary"
+              title="Buscar por código (lector USB)"
+            >
+              <ScanLine className="h-4 w-4" />
+            </button>
+          </div>
         </div>
         <div className="flex-shrink-0 h-px bg-border/50 mx-4 mt-3" />
         
@@ -1245,8 +1479,45 @@ setShowTicket(true);
                     </div>
                     
                     <div className="text-right font-mono font-medium text-sm shrink-0">
-                      ${(item.price * item.quantity).toFixed(2)}
+                      ${itemNet(item).toFixed(2)}
+                      {Number(item.discount) > 0 && (
+                        <span className="block text-[10px] text-danger font-normal">
+                          -${Number(item.discount).toFixed(2)}
+                        </span>
+                      )}
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 border-t border-border/50 pt-1.5">
+                    <span className="text-[10px] uppercase tracking-wide text-text-secondary">Desc.</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      aria-label={`Descuento ${item.name}`}
+                      placeholder="0.00"
+                      value={item.discount ?? ''}
+                      onChange={(e) => {
+                        const value = Math.max(0, Number(e.target.value) || 0);
+                        setCart(current => current.map(c =>
+                          c.product_id === item.product_id ? { ...c, discount: value } : c
+                        ));
+                      }}
+                      className="w-20 rounded border border-border bg-bg px-1.5 py-0.5 text-center font-mono text-xs text-text focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <input
+                      type="text"
+                      aria-label={`Motivo descuento ${item.name}`}
+                      placeholder="Motivo del descuento (opcional)"
+                      value={item.discount_reason || ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setCart(current => current.map(c =>
+                          c.product_id === item.product_id ? { ...c, discount_reason: value } : c
+                        ));
+                      }}
+                      className="flex-1 rounded border border-border bg-bg px-1.5 py-0.5 text-xs text-text focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
                   </div>
                 </div>
               );})}
@@ -1407,7 +1678,7 @@ setShowTicket(true);
                     <span className="font-mono text-primary">{item.quantity}x</span>
                     <span>{item.name}</span>
                   </div>
-                  <span className="font-mono text-text-secondary">${(item.price * item.quantity).toFixed(2)}</span>
+                  <span className="font-mono text-text-secondary">${itemNet(item).toFixed(2)}</span>
                 </div>
               ))}
             </div>
@@ -1684,7 +1955,7 @@ setShowTicket(true);
                       product_name: item.name,
                       quantity: item.quantity,
                       unit_price: item.price,
-                      subtotal: item.price * item.quantity,
+                      subtotal: itemNet(item),
                       is_recipe: item.is_recipe || false,
                       recipe_snapshot: item.recipe_snapshot || undefined,
                     }));
@@ -1700,7 +1971,7 @@ setShowTicket(true);
                         name: item.name,
                         quantity: item.quantity,
                         unitPrice: item.price,
-                        subtotal: item.price * item.quantity
+                        subtotal: itemNet(item)
                       }));
                       const totalItems = cartItems.reduce((sum, item) => sum + item.subtotal, 0);
                       
@@ -1819,6 +2090,86 @@ setShowTicket(true);
               </div>
             </div>
 
+            <div className="mb-4 grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Fondo inicial</label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="font-mono"
+                  value={openingCash || ''}
+                  onChange={e => setOpeningCash(Number(e.target.value) || 0)}
+                  placeholder="Fondo"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Retiros de caja</label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="font-mono"
+                  value={cashWithdrawals || ''}
+                  onChange={e => setCashWithdrawals(Number(e.target.value) || 0)}
+                  placeholder="Retiro"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Ingresos de caja</label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="font-mono"
+                  value={cashDeposits || ''}
+                  onChange={e => setCashDeposits(Number(e.target.value) || 0)}
+                  placeholder="Ingreso"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Propinas (aparte)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="font-mono"
+                  value={cashTips || ''}
+                  onChange={e => setCashTips(Number(e.target.value) || 0)}
+                  placeholder="Propina"
+                />
+              </div>
+            </div>
+
+            {closingSales.length > 0 && (
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-text mb-2">Ventas del turno</h3>
+                <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                  {closingSales.map((sale: any) => (
+                    <div key={sale.id} className="flex items-center justify-between gap-2 rounded border border-border bg-bg px-2 py-1">
+                      <span className="font-mono text-[11px] text-text-secondary">
+                        {new Date(sale.date).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })} · ${Number(sale.total).toFixed(2)}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openReturnModal(sale)}
+                          className="rounded p-1 text-text-secondary hover:bg-primary/10 hover:text-primary"
+                          title="Devolver"
+                        >
+                          <Undo2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setVoidTarget(sale); setVoidReason(''); }}
+                          className="rounded p-1 text-text-secondary hover:bg-danger/10 hover:text-danger"
+                          title="Anular venta"
+                        >
+                          <Ban className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mb-4">
               <h3 className="text-sm font-semibold text-text mb-3">Desgloce por Moneda</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1918,6 +2269,97 @@ setShowTicket(true);
 </div>
         )}
       
+      {showScanner && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-border/50 bg-surface p-4 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-text">Escanear código</h2>
+              <button onClick={() => setShowScanner(false)} className="rounded-full p-2 text-text-secondary hover:bg-surface-hover">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <video ref={scannerVideoRef} className="w-full rounded-xl bg-black" autoPlay muted playsInline />
+            <p className="mt-2 text-xs text-text-secondary">
+              Acerque el código a la cámara. En tablets por LAN la cámara requiere HTTPS; use un lector USB.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {voidTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border/50 bg-surface p-5 shadow-2xl">
+            <h2 className="text-lg font-bold text-text">Anular venta</h2>
+            <p className="mt-1 text-sm text-text-secondary">
+              Total: ${Number(voidTarget.total).toFixed(2)}. Se repondrá el stock y quedará registrada la anulación.
+            </p>
+            <textarea
+              className="mt-3 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              rows={3}
+              placeholder="Motivo de la anulación (obligatorio)"
+              value={voidReason}
+              onChange={e => setVoidReason(e.target.value)}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setVoidTarget(null)}>Cancelar</Button>
+              <Button variant="destructive" onClick={confirmVoid}>Anular venta</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {returnTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-border/50 bg-surface p-5 shadow-2xl">
+            <h2 className="text-lg font-bold text-text">Devolver venta</h2>
+            <p className="mt-1 text-sm text-text-secondary">Marque los ítems devueltos. Puede reponerlos al stock o registrarlos como merma.</p>
+            <div className="mt-3 space-y-2">
+              {returnItems.map((item, index) => (
+                <div key={item.sale_item_id} className="rounded-lg border border-border bg-bg p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-text">{item.name}</span>
+                    <span className="font-mono text-xs text-text-secondary">máx. {item.max}</span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={item.max}
+                      step="1"
+                      value={item.quantity}
+                      onChange={e => {
+                        const value = Math.max(0, Math.min(item.max, Number(e.target.value) || 0));
+                        setReturnItems(current => current.map((it, i) => i === index ? { ...it, quantity: value } : it));
+                      }}
+                      className="w-20 rounded border border-border bg-bg px-2 py-1 text-center font-mono text-sm text-text"
+                    />
+                    <label className="flex items-center gap-1 text-xs text-text-secondary">
+                      <input
+                        type="checkbox"
+                        checked={item.restock}
+                        onChange={e => setReturnItems(current => current.map((it, i) => i === index ? { ...it, restock: e.target.checked } : it))}
+                      />
+                      Reponer al stock
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <textarea
+              className="mt-3 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              rows={2}
+              placeholder="Motivo de la devolución (opcional)"
+              value={returnReason}
+              onChange={e => setReturnReason(e.target.value)}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setReturnTarget(null)}>Cancelar</Button>
+              <Button onClick={confirmReturn}>Registrar devolución</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showTicket && ticketData && (
         <TicketView
           ticketData={ticketData}

@@ -36,6 +36,8 @@ const FEATURES = [
   'Tickets de 58/80mm e impresión',
   'Exportación de datos a Excel',
   'Importación de inventario desde Excel o CSV',
+  'Códigos de barras, SKU y fotos de productos',
+  'Devoluciones y anulación de ventas con reposición de stock',
   'Multi-caja en red local (LAN)',
   'Cajas en tablets y celulares por WiFi (sin instalar nada)',
   '100% offline + soporte por WhatsApp',

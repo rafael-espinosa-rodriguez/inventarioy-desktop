@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { Modal } from './ui/Modal';
@@ -60,8 +61,19 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
     setResult(null);
     try {
       const buffer = await file.arrayBuffer();
-      const content = decodeImportFile(buffer);
-      setText(content);
+      if (/\.xlsx?$/i.test(file.name)) {
+        const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, raw: false, defval: '' });
+        const text = rows
+          .filter((row) => Array.isArray(row) && row.some((cell) => String(cell).trim() !== ''))
+          .map((row) => row.map((cell) => String(cell ?? '')).join('\t'))
+          .join('\n');
+        setText(text);
+      } else {
+        const content = decodeImportFile(buffer);
+        setText(content);
+      }
       setFileName(file.name);
     } catch (error: any) {
       setReadError(error?.message || 'No se pudo leer el archivo');
@@ -114,14 +126,14 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
       isOpen={isOpen}
       onClose={onClose}
       title="Importar inventario"
-      description="Cargue sus productos desde un archivo CSV generado en Excel."
+      description="Cargue sus productos desde un archivo CSV o Excel (.xlsx)."
       size="full"
     >
       <div className="space-y-5">
         <div className="flex flex-col gap-3 rounded-xl border border-border bg-bg p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-sm text-text-secondary">
             <FileSpreadsheet className="h-4 w-4 shrink-0 text-primary" />
-            <span>Descargue la plantilla, complétela en Excel y guárdela como CSV.</span>
+            <span>Descargue la plantilla, complétela en Excel y guárdela como CSV o súbala como .xlsx.</span>
           </div>
           <Button type="button" variant="outline" size="sm" onClick={handleTemplate}>
             <Download className="mr-2 h-4 w-4" />
@@ -130,11 +142,11 @@ export function ImportProductsDialog({ isOpen, onClose }: ImportProductsDialogPr
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="import-file" className="text-sm font-medium text-text">Archivo CSV/TSV</label>
+          <label htmlFor="import-file" className="text-sm font-medium text-text">Archivo CSV/TSV/Excel</label>
           <Input
             id="import-file"
             type="file"
-            accept=".csv,.tsv,.txt,text/csv,text/plain"
+            accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
             onChange={e => handleFile(e.target.files?.[0])}
           />
           {fileName && <p className="text-xs text-text-secondary">Archivo: {fileName}</p>}

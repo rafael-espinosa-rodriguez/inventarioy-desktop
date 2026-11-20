@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useDatabaseStore } from '../../store/dbStore';
-import { Search, Filter, ArrowDownToLine, ArrowUpFromLine, AlertTriangle, Calendar, ChevronLeft, ChevronRight, TrendingDown, Settings2, Printer, X, Loader2, History } from 'lucide-react';
+import { Search, Filter, ArrowDownToLine, ArrowUpFromLine, AlertTriangle, Calendar, ChevronLeft, ChevronRight, TrendingDown, Settings2, Printer, FileDown, X, Loader2, History } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { toast } from 'sonner';
-import { exportToExcel } from '../../lib/utils';
+import { exportToExcel, exportReportPdf } from '../../lib/utils';
 import { formatNumber } from '../../lib/formatNumber';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
 import { usePersistentFilters } from '../../lib/hooks/usePersistentFilters';
@@ -187,6 +187,31 @@ export default function MovementsView() {
         >
           <Printer className="h-4 w-4" />
           Exportar
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          title="Exportar movimientos a PDF"
+          onClick={() => {
+            const rows = filteredMovements.map(m => [
+              new Date(m.date).toLocaleString('es-ES'),
+              m.type,
+              getProductName(m.product_id),
+              Number(m.quantity).toFixed(3),
+              m.unit || '',
+              (Number(m.cost) || 0).toFixed(2),
+              m.reason || '',
+            ]);
+            exportReportPdf(
+              'Movimientos de inventario',
+              ['Fecha', 'Tipo', 'Producto', 'Cantidad', 'Unidad', 'Costo', 'Razón'],
+              rows
+            );
+          }}
+        >
+          <FileDown className="h-4 w-4" />
+          PDF
         </Button>
       </div>
 

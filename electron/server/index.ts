@@ -372,6 +372,9 @@ const TABLE_MODULES: Record<string, TableModuleRule> = {
   // Ventas + flujo de caja: requiere módulo "sales"
   sales: 'sales',
   sale_items: 'sales',
+  sale_returns: 'sales',
+  sale_return_items: 'sales',
+  cash_movements: 'sales',
   pending_accounts: 'sales',
   payments: 'sales',
   // products/movements/transit/product_warehouse son tablas operativas que
@@ -418,6 +421,74 @@ const TABLE_MODULES: Record<string, TableModuleRule> = {
   // Puntos de venta / cajas: solo el dueño los gestiona
   cajas: 'settings',
 };
+
+// Repone stock al almacén principal (usado por devoluciones y anulación de ventas).
+// Mantiene la misma semántica que una ENTRADA manual: actualiza product_warehouse,
+// products.quantity, costo promedio ponderado y registra el movimiento.
+function restoreStockToWarehouse(
+  productId: string,
+  qty: number,
+  unitCost: number,
+  reason: string,
+  now: string,
+  warehouseId: string | null
+): void {
+  if (!(qty > 0)) return;
+  const product = getRaw<any>('SELECT * FROM products WHERE id = ?', [productId]);
+  if (!product) return;
+
+  let currentQty = Number(product.quantity || 0);
+  if (warehouseId) {
+    const pw = getRaw<any>('SELECT * FROM product_warehouse WHERE product_id = ? AND warehouse_id = ?', [productId, warehouseId]);
+    currentQty = pw ? Number(pw.quantity) : 0;
+    if (pw) {
+      runRaw('UPDATE product_warehouse SET quantity = ?, updated_at = ? WHERE id = ?', [currentQty + qty, now, pw.id]);
+    } else {
+      runRaw(
+        'INSERT INTO product_warehouse (id, product_id, warehouse_id, quantity, in_transit, updated_at) VALUES (?, ?, ?, ?, 0, ?)',
+        [crypto.randomUUID(), productId, warehouseId, qty, now]
+      );
+    }
+  }
+
+  const newQty = currentQty + qty;
+  const unit = Number(unitCost) || Number(product.cost) || 0;
+  const newCost = newQty > 0
+    ? ((currentQty * Number(product.cost || 0)) + (qty * unit)) / newQty
+    : Number(product.cost || 0);
+  runRaw('UPDATE products SET quantity = ?, cost = ?, updated_at = ? WHERE id = ?', [newQty, newCost, now, productId]);
+
+  runRaw(
+    `INSERT INTO movements (id, user_id, product_id, type, quantity, unit, date, cost, reason, status, warehouse_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [crypto.randomUUID(), 'owner', productId, 'ENTRADA', qty, product.unit || 'u', now, unit, reason, 'NORMAL', warehouseId, now]
+  );
+}
+
+// Repone los ingredientes de una receta vendida (según el snapshot de la venta).
+function restoreRecipeIngredients(
+  snapshot: any,
+  soldQty: number,
+  reason: string,
+  now: string,
+  warehouseId: string | null
+): void {
+  const ingredients = snapshot?.ingredients;
+  if (!Array.isArray(ingredients)) return;
+  for (const ing of ingredients) {
+    const qty = Number(ing.quantity) * Number(soldQty);
+    restoreStockToWarehouse(ing.product_id, qty, Number(ing.unit_cost) || 0, reason, now, warehouseId);
+  }
+}
+
+function insertSalesAudit(role: string, action: string, details: Record<string, any>): void {
+  const now = new Date().toISOString();
+  runRaw(
+    `INSERT INTO action_logs (id, user_id, role, pin_role_label, module, action, details, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [crypto.randomUUID(), 'owner', role, role, 'sales', action, JSON.stringify(details), now]
+  );
+}
 
 // El rol de escritura se obtiene de la sesión del dispositivo (x-inventarioy-session),
 // creada en el login/verify exitoso. Cada caja tiene su propio rol, por lo que dos
@@ -691,9 +762,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     }
     try {
       const products = queryRaw<any>(
-        'SELECT id, name, price, category, quantity, is_individual, is_active FROM products WHERE user_id = ? AND is_active = 1 ORDER BY name',
+        'SELECT id, name, price, category, quantity, is_individual, is_active, sku, photo_path FROM products WHERE user_id = ? AND is_active = 1 ORDER BY name',
         [b]
-      );
+      ).map((p: any) => ({
+        ...p,
+        photo_url: p.photo_path ? `/api/storage/download?path=${encodeURIComponent(p.photo_path)}` : null,
+      }));
       const recipes = queryRaw<any>(
         'SELECT id, name, selling_price FROM recipes WHERE user_id = ? ORDER BY name',
         [b]
@@ -1159,15 +1233,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
             unit_cost: item.unit_cost || 0,
             selling_price: item.selling_price || 0,
             subtotal: item.subtotal || 0,
+            discount: item.discount || 0,
+            discount_reason: item.discount_reason || null,
             is_recipe: item.is_recipe ? 1 : 0,
             recipe_snapshot: item.recipe_snapshot ? JSON.stringify(item.recipe_snapshot) : null,
             created_at: now,
           }));
           for (const si of saleItems) {
             runRaw(
-              `INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_cost, selling_price, subtotal, is_recipe, recipe_snapshot, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [si.id, si.sale_id, si.product_id, si.quantity, si.unit_cost, si.selling_price, si.subtotal, si.is_recipe, si.recipe_snapshot, now]
+              `INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_cost, selling_price, subtotal, discount, discount_reason, is_recipe, recipe_snapshot, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [si.id, si.sale_id, si.product_id, si.quantity, si.unit_cost, si.selling_price, si.subtotal, si.discount || 0, si.discount_reason || null, si.is_recipe, si.recipe_snapshot, now]
             );
           }
 
@@ -1243,6 +1319,164 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al registrar la venta', code: 'SALE_ERROR' } });
       }
     }
+    if (fn === 'void_sale') {
+      const role = getRequestRole(request);
+      if (role === null) {
+        return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (!roleAllowed('sales', 'update', role)) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu rol no tiene permiso para anular ventas.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (isWriteBlockedByLicense()) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' } });
+      }
+      const saleId = String(args?.sale_id || '');
+      const reason = String(args?.reason || '').trim();
+      if (!saleId) return reply.code(400).send({ data: null, error: { message: 'Falta la venta' } });
+      if (!reason) return reply.code(400).send({ data: null, error: { message: 'El motivo de anulación es obligatorio' } });
+
+      try {
+        transaction(() => {
+          const sale = getRaw<any>('SELECT * FROM sales WHERE id = ?', [saleId]);
+          if (!sale) throw { code: 'NOT_FOUND', message: 'Venta no encontrada' };
+          if (sale.voided_at) throw { code: 'ALREADY_VOID', message: 'La venta ya está anulada' };
+          const saleDate = String(sale.date).slice(0, 10);
+          const closed = getRaw<any>(
+            'SELECT 1 FROM daily_closings WHERE user_id = ? AND closing_date = ? AND shift = ?',
+            ['owner', saleDate, sale.shift || '1']
+          );
+          if (closed) throw { code: 'DAY_CLOSED', message: 'El turno ya está cerrado; no se puede anular la venta' };
+
+          const items = queryRaw<any>('SELECT * FROM sale_items WHERE sale_id = ?', [saleId]);
+          const mainWarehouse = getRaw<any>("SELECT id FROM warehouses WHERE user_id = 'owner' AND is_main = 1")
+            || getRaw<any>("SELECT id FROM warehouses WHERE user_id = 'owner' ORDER BY created_at LIMIT 1");
+          const warehouseId = mainWarehouse?.id || null;
+          const now = new Date().toISOString();
+          const label = `Anulación venta #${saleId.slice(0, 8)}`;
+
+          for (const item of items) {
+            if (item.is_recipe) {
+              let snapshot: any = null;
+              try { snapshot = item.recipe_snapshot ? JSON.parse(item.recipe_snapshot) : null; } catch { snapshot = null; }
+              restoreRecipeIngredients(snapshot, Number(item.quantity), label, now, warehouseId);
+            } else {
+              restoreStockToWarehouse(item.product_id, Number(item.quantity), Number(item.unit_cost) || 0, label, now, warehouseId);
+            }
+          }
+
+          runRaw('UPDATE sales SET voided_at = ?, void_reason = ?, voided_by = ? WHERE id = ?', [now, reason, role, saleId]);
+          insertSalesAudit(role, 'ANULAR', { sale_id: saleId, reason, total: sale.total_amount });
+        });
+        return { data: { success: true }, error: null };
+      } catch (e: any) {
+        if (e?.code) return { data: null, error: { message: e.message, code: e.code } };
+        return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al anular la venta', code: 'VOID_ERROR' } });
+      }
+    }
+
+    if (fn === 'sale_return') {
+      const role = getRequestRole(request);
+      if (role === null) {
+        return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (!roleAllowed('sales', 'insert', role)) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu rol no tiene permiso para registrar devoluciones.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (isWriteBlockedByLicense()) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' } });
+      }
+      const saleId = String(args?.sale_id || '');
+      const reason = String(args?.reason || '').trim();
+      const requested = Array.isArray(args?.items) ? args.items : [];
+      if (!saleId || requested.length === 0) {
+        return reply.code(400).send({ data: null, error: { message: 'Faltan la venta o los ítems a devolver' } });
+      }
+
+      try {
+        const result = transaction(() => {
+          const sale = getRaw<any>('SELECT * FROM sales WHERE id = ?', [saleId]);
+          if (!sale) throw { code: 'NOT_FOUND', message: 'Venta no encontrada' };
+          if (sale.voided_at) throw { code: 'SALE_VOID', message: 'La venta está anulada' };
+          const saleDate = String(sale.date).slice(0, 10);
+          const closed = getRaw<any>(
+            'SELECT 1 FROM daily_closings WHERE user_id = ? AND closing_date = ? AND shift = ?',
+            ['owner', saleDate, sale.shift || '1']
+          );
+          if (closed) throw { code: 'DAY_CLOSED', message: 'El turno ya está cerrado; no se pueden registrar devoluciones' };
+
+          const saleItems = queryRaw<any>('SELECT * FROM sale_items WHERE sale_id = ?', [saleId]);
+          const itemsById = new Map(saleItems.map((i: any) => [i.id, i]));
+          const returnedRows = queryRaw<any>(
+            `SELECT sri.sale_item_id, COALESCE(SUM(sri.quantity), 0) AS returned
+             FROM sale_return_items sri
+             JOIN sale_returns sr ON sr.id = sri.return_id
+             WHERE sr.sale_id = ?
+             GROUP BY sri.sale_item_id`,
+            [saleId]
+          );
+          const alreadyReturned = new Map<string, number>(
+            returnedRows.map((r: any) => [String(r.sale_item_id), Number(r.returned) || 0])
+          );
+
+          const now = new Date().toISOString();
+          const mainWarehouse = getRaw<any>("SELECT id FROM warehouses WHERE user_id = 'owner' AND is_main = 1")
+            || getRaw<any>("SELECT id FROM warehouses WHERE user_id = 'owner' ORDER BY created_at LIMIT 1");
+          const warehouseId = mainWarehouse?.id || null;
+          const returnId = crypto.randomUUID();
+          const label = `Devolución venta #${saleId.slice(0, 8)}`;
+          let total = 0;
+
+          for (const req of requested) {
+            const saleItem = itemsById.get(String(req.sale_item_id));
+            if (!saleItem) throw { code: 'INVALID_ITEM', message: 'Ítem de venta no encontrado' };
+            const qty = Number(req.quantity);
+            if (!(qty > 0)) continue;
+            const already = alreadyReturned.get(String(saleItem.id)) || 0;
+            const sold = Number(saleItem.quantity);
+            if (qty > sold - already) {
+              throw { code: 'INVALID_QTY', message: `La cantidad devuelta excede lo vendido (${sold - already} disponible)` };
+            }
+            const unitPrice = Number(req.unit_price ?? saleItem.selling_price) || 0;
+            const subtotal = unitPrice * qty;
+            const restock = req.restock ? 1 : 0;
+            total += subtotal;
+
+            runRaw(
+              `INSERT INTO sale_return_items (id, return_id, sale_item_id, product_id, quantity, unit_price, subtotal, restock, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [crypto.randomUUID(), returnId, saleItem.id, saleItem.product_id, qty, unitPrice, subtotal, restock, now]
+            );
+
+            if (restock) {
+              if (saleItem.is_recipe) {
+                let snapshot: any = null;
+                try { snapshot = saleItem.recipe_snapshot ? JSON.parse(saleItem.recipe_snapshot) : null; } catch { snapshot = null; }
+                restoreRecipeIngredients(snapshot, qty, label, now, warehouseId);
+              } else {
+                restoreStockToWarehouse(saleItem.product_id, qty, Number(saleItem.unit_cost) || 0, label, now, warehouseId);
+              }
+            }
+          }
+
+          if (total <= 0 && requested.length === 0) {
+            throw { code: 'EMPTY_RETURN', message: 'No hay ítems válidos para devolver' };
+          }
+
+          runRaw(
+            `INSERT INTO sale_returns (id, user_id, sale_id, date, total, reason, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [returnId, 'owner', saleId, now, total, reason || null, role, now]
+          );
+          insertSalesAudit(role, 'DEVOLUCION', { sale_id: saleId, return_id: returnId, total, reason });
+          return { returnId, total };
+        });
+        return { data: { success: true, ...result }, error: null };
+      } catch (e: any) {
+        if (e?.code) return { data: null, error: { message: e.message, code: e.code } };
+        return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al registrar la devolución', code: 'RETURN_ERROR' } });
+      }
+    }
+
     return reply.code(400).send({ data: null, error: { message: `RPC desconocida: ${fn}` } });
   });
 

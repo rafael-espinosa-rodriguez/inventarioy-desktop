@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect } from 'react';
-import { DollarSign, Calendar, Search, X, Eye, ArrowUpDown, ArrowDown, ArrowUp, Printer, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DollarSign, Calendar, Search, X, Eye, ArrowUpDown, ArrowDown, ArrowUp, Printer, FileDown, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useDatabaseStore, getRoleModules } from '../../store/dbStore';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { toast } from 'sonner';
-import { exportToExcel } from '../../lib/utils';
+import { exportToExcel, exportReportPdf } from '../../lib/utils';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
 import { useCountUp } from '../../lib/animations/useCountUp';
 import { usePersistentFilters } from '../../lib/hooks/usePersistentFilters';
@@ -359,6 +359,30 @@ export default function DailyClosingsView() {
           >
             <Printer className="h-4 w-4" />
             Exportar
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            title="Exportar cierres a PDF"
+            onClick={() => {
+              const rows = filteredClosings.map(c => [
+                new Date(c.closing_date).toLocaleDateString('es-ES'),
+                Number(c.total_sales || 0).toFixed(2),
+                Number(c.total_discounts || 0).toFixed(2),
+                Number(c.total_refunds || 0).toFixed(2),
+                Number(c.closing_amount || 0).toFixed(2),
+                c.created_by_name || '',
+              ]);
+              exportReportPdf(
+                'Cierres de caja',
+                ['Fecha', 'Ventas', 'Descuentos', 'Devoluciones', 'Cierre', 'Empleado'],
+                rows
+              );
+            }}
+          >
+            <FileDown className="h-4 w-4" />
+            PDF
           </Button>
         </div>
       </div>

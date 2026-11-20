@@ -18,6 +18,8 @@ export interface ImportRow {
   eoq: number;
   expiration_date: string | null;
   description: string;
+  sku: string;
+  barcode: string;
   is_individual: boolean;
   is_gasto_variable: boolean;
   is_consumo_directo: boolean;
@@ -40,7 +42,7 @@ export interface ImportPreview {
 
 type FieldKey =
   | 'name' | 'category' | 'unit' | 'quantity' | 'cost' | 'price' | 'rop' | 'eoq'
-  | 'expiration_date' | 'description' | 'is_individual' | 'is_gasto_variable'
+  | 'expiration_date' | 'description' | 'sku' | 'barcode' | 'is_individual' | 'is_gasto_variable'
   | 'is_consumo_directo';
 
 // Cabeceras aceptadas (normalizadas: minúsculas, sin acentos).
@@ -57,6 +59,7 @@ const HEADER_ALIASES: Record<string, FieldKey> = {
   vencimiento: 'expiration_date', 'fecha de vencimiento': 'expiration_date',
   caducidad: 'expiration_date', 'fecha vencimiento': 'expiration_date',
   descripcion: 'description', detalle: 'description', nota: 'description',
+  sku: 'sku', codigo: 'sku', 'codigo interno': 'sku', 'codigo de barras': 'barcode', barcode: 'barcode', 'codigo barras': 'barcode',
   individual: 'is_individual', 'venta unitaria': 'is_individual', 'por unidad': 'is_individual',
   'gasto variable': 'is_gasto_variable', 'es gasto variable': 'is_gasto_variable',
   'consumo directo': 'is_consumo_directo', 'es consumo directo': 'is_consumo_directo',
@@ -65,12 +68,13 @@ const HEADER_ALIASES: Record<string, FieldKey> = {
 const TEMPLATE_HEADERS = [
   'Nombre', 'Categoría', 'Unidad', 'Cantidad', 'Costo', 'Precio', 'ROP', 'EOQ',
   'Vencimiento', 'Descripción', 'Individual', 'Gasto variable', 'Consumo directo',
+  'SKU', 'Código de barras',
 ];
 
 const TEMPLATE_EXAMPLES = [
-  ['Aceite de girasol', 'Otros', 'L', '12', '450', '0', '4', '12', '', 'Aceite para cocina', 'No', 'No', 'No'],
-  ['Refresco Cola 1.5L', 'Bebidas y Refrescos', 'u', '24', '300', '500', '6', '24', '2027-01-31', 'Botella 1.5 litros', 'Sí', 'No', 'No'],
-  ['Pollo entero', 'Carnes y Embutidos', 'kg', '8,5', '850', '0', '2', '10', '', '', 'No', 'No', 'No'],
+  ['Aceite de girasol', 'Otros', 'L', '12', '450', '0', '4', '12', '', 'Aceite para cocina', 'No', 'No', 'No', 'ACE-001', '7591001000012'],
+  ['Refresco Cola 1.5L', 'Bebidas y Refrescos', 'u', '24', '300', '500', '6', '24', '2027-01-31', 'Botella 1.5 litros', 'Sí', 'No', 'No', 'BEB-010', '7591001000029'],
+  ['Pollo entero', 'Carnes y Embutidos', 'kg', '8,5', '850', '0', '2', '10', '', '', 'No', 'No', 'No', 'CAR-003', ''],
 ];
 
 /** Detecta el separador mirando la primera línea con contenido (fuera de comillas). */
@@ -323,6 +327,8 @@ export function parseImportText(text: string, existingNames: string[] = []): Imp
       eoq,
       expiration_date: expiration,
       description: get('description'),
+      sku: get('sku'),
+      barcode: get('barcode'),
       ...booleans,
     });
   });
