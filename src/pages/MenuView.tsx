@@ -12,6 +12,7 @@ interface MenuItem {
   categoryName: string;
   is_recipe: boolean;
   stock?: number;
+  photo_url?: string | null;
 }
 
 const isActive = (v: any) => v === true || v === 1;
@@ -86,7 +87,8 @@ export default function MenuView() {
           category: product.category || 'uncategorized',
           categoryName: product.category || 'Sin categoría',
           is_recipe: false,
-          stock: product.quantity || 0
+          stock: product.quantity || 0,
+          photo_url: product.photo_url || null
         });
       });
 
@@ -240,6 +242,13 @@ export default function MenuView() {
                   }`}
                 >
                   <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                  {item.photo_url && (
+                    <img
+                      src={item.photo_url}
+                      alt={item.name}
+                      className="h-28 w-full object-cover"
+                    />
+                  )}
                   <div className="p-4 relative">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">

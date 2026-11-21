@@ -230,6 +230,60 @@ test('movimientos de caja se registran y quedan en la base', async ({ request })
   expect(rows.some(r => r.id === `cash-${suffix}`)).toBe(true);
 });
 
+test('los botones PDF de Ventas y Cierres abren un reporte imprimible', async ({ page }) => {
+  await page.context().addInitScript(() => {
+    // Evita que el diálogo de impresión bloquee la ventana durante el test.
+    window.print = () => {};
+  });
+  await ensureLoggedIn(page);
+
+  await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await dismissPinModal(page);
+  const salesPopupPromise = page.context().waitForEvent('page');
+  await page.getByRole('button', { name: 'PDF' }).first().click();
+  const salesPopup = await salesPopupPromise;
+  await salesPopup.waitForLoadState('domcontentloaded');
+  expect(await salesPopup.title()).toContain('Ventas');
+  await salesPopup.close();
+
+  await page.goto(APP_URL + '/dashboard/closings', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await dismissPinModal(page);
+  const closingsPopupPromise = page.context().waitForEvent('page');
+  await page.getByRole('button', { name: 'PDF' }).first().click();
+  const closingsPopup = await closingsPopupPromise;
+  await closingsPopup.waitForLoadState('domcontentloaded');
+  expect(await closingsPopup.title()).toContain('Cierres');
+  await closingsPopup.close();
+});
+
+test('Gráficos muestra la Evolución de Ventas como gráfico de líneas', async ({ page, request }) => {
+  const warehouses = await queryRows(request, 'warehouses', [{ op: 'eq', column: 'user_id', value: 'owner' }]);
+  const warehouseId = warehouses.find(w => w.is_main)?.id || warehouses[0]?.id;
+  const productId = await seedProductWithTransit(request, `chart qa ${suffix}`, `7599${suffix}9`, warehouseId, 3);
+  const saleRes = await call(request, 'POST', '/api/rpc', {
+    fn: 'sale',
+    args: {
+      sale: {
+        items: [{ product_id: productId, quantity: 1, unit_cost: 100, selling_price: 150, subtotal: 150, is_recipe: false }],
+        total_amount: 150, date: new Date().toISOString(), sale_type: 'VENTA_RAPIDA',
+        discount: 0, payment_method: 'Efectivo: 150', efectivo: 150,
+      },
+    },
+  });
+  expect(saleRes.j?.data?.success).toBe(true);
+
+  await ensureLoggedIn(page);
+  await page.goto(APP_URL + '/dashboard/charts', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await dismissPinModal(page);
+  await expect(page.getByText('Evolución de Ventas')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('No hay datos de ventas suficientes')).toHaveCount(0);
+  const chartCard = page.locator('div').filter({ has: page.getByRole('heading', { name: 'Evolución de Ventas' }) }).last();
+  await expect(chartCard.locator('svg').first()).toBeVisible();
+});
+
 test('importa .xlsx directo con validaciones', async ({ page, request }) => {
   const nameA = `xlsx qa a ${suffix}`;
   const nameB = `xlsx qa b ${suffix}`;

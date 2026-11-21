@@ -7,7 +7,8 @@ import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { validateNumber, exportToExcel, exportReportPdf, isActive } from '../../lib/utils';
+import { validateNumber, exportToExcel, exportReportPdf, isActive, uuid } from '../../lib/utils';
+import { compressImage, storageUrl } from '../../lib/imageUtils';
 import { normalizeUnit, getCompatibleUnits, convertUnit, type UnitAbbrev } from '../../lib/unitConversion';
 import { formatNumber } from '../../lib/formatNumber';
 import { useStaggerEnter } from '../../lib/animations/useStaggerEnter';
@@ -76,7 +77,12 @@ export default function StockView() {
   const [editParams, setEditParams] = useState({
     rop: 0,
     price: 0,
+    sku: '',
+    barcode: '',
+    photo_path: '',
   });
+  const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
+  const [editPhotoPreview, setEditPhotoPreview] = useState('');
   const [ropAutoDetail, setRopAutoDetail] = useState<{dailyAvg: number; suggested: number} | null>(null);
   // Centro de alertas locales (spec 006).
   const [alerts, setAlerts] = useState<{ kind: string; title: string; detail: string; count: number; names: string[]; link: string }[]>([]);
@@ -273,14 +279,29 @@ export default function StockView() {
     setEditParams({
       rop: Number(product.rop) || 0,
       price: Number(product.price) || 0,
+      sku: product.sku || '',
+      barcode: product.barcode || '',
+      photo_path: product.photo_path || '',
     });
+    setEditPhotoFile(null);
+    setEditPhotoPreview(storageUrl(product.photo_path) || '');
     setRopAutoDetail(null);
   };
 
   const closeEditModal = () => {
     setEditingProduct(null);
-    setEditParams({ rop: 0, price: 0 });
+    setEditParams({ rop: 0, price: 0, sku: '', barcode: '', photo_path: '' });
+    setEditPhotoFile(null);
+    setEditPhotoPreview('');
     setRopAutoDetail(null);
+  };
+
+  const handleEditPhotoChange = async (file: File | undefined) => {
+    if (!file) return;
+    const blob = await compressImage(file);
+    const compressed = new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+    setEditPhotoFile(compressed);
+    setEditPhotoPreview(URL.createObjectURL(compressed));
   };
 
   const calculateRopAuto = (productId: string) => {
@@ -323,6 +344,8 @@ export default function StockView() {
 
     const updates: any = {
       rop: Math.max(0, editParams.rop),
+      sku: editParams.sku.trim() || null,
+      barcode: editParams.barcode.trim() || null,
     };
 
     if (editingProduct.is_individual) {
@@ -330,6 +353,15 @@ export default function StockView() {
     }
 
     try {
+      if (editPhotoFile) {
+        const fileName = `${uuid()}.jpg`;
+        const { error } = await localDb.storage.from('products').upload(fileName, editPhotoFile, { upsert: true });
+        if (error) {
+          toast.error('No se pudo subir la foto: ' + error.message);
+          return;
+        }
+        updates.photo_path = `products/${fileName}`;
+      }
       await updateProduct(editingProduct.id, updates);
       await logAction('stock', 'EDITAR_PARAMETROS', {
         product_id: editingProduct.id,
@@ -337,6 +369,9 @@ export default function StockView() {
         changes: {
           rop: editParams.rop,
           price: editingProduct.is_individual ? editParams.price : null,
+          sku: updates.sku,
+          barcode: updates.barcode,
+          photo: updates.photo_path || undefined,
         },
       });
       toast.success('Parámetros actualizados exitosamente');
@@ -662,6 +697,13 @@ export default function StockView() {
                     >
                       <td className="px-4 py-3 font-medium">
                         <div className="flex items-center gap-2">
+                          {product.photo_path && (
+                            <img
+                              src={storageUrl(product.photo_path) || ''}
+                              alt={product.name}
+                              className="h-8 w-8 shrink-0 rounded object-cover border border-border"
+                            />
+                          )}
                           {product.name}
                           {isConfigured && (
                             <span title="Parámetros configurados">
@@ -906,6 +948,40 @@ export default function StockView() {
                   <p className="text-xs text-text-secondary">Precio por unidad (ej: $350 por cerveza)</p>
                 </div>
               )}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="edit_sku">SKU / Código interno</Label>
+                  <Input
+                    id="edit_sku"
+                    value={editParams.sku}
+                    onChange={(e) => setEditParams({ ...editParams, sku: e.target.value })}
+                    placeholder="Ej: BEB-001"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit_barcode">Código de barras</Label>
+                  <Input
+                    id="edit_barcode"
+                    value={editParams.barcode}
+                    onChange={(e) => setEditParams({ ...editParams, barcode: e.target.value })}
+                    placeholder="Escanee o escriba el código"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="edit_photo">Foto del producto</Label>
+                <Input
+                  id="edit_photo"
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleEditPhotoChange(e.target.files?.[0])}
+                />
+                {editPhotoPreview && (
+                  <img src={editPhotoPreview} alt="Foto del producto" className="h-20 w-20 rounded-lg border border-border object-cover" />
+                )}
+              </div>
             </div>
 
             <div className="mt-6 flex gap-3 shrink-0">

@@ -141,7 +141,7 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 
 ## 12. Punto de venta: códigos, descuentos, devoluciones y caja
 
-**Códigos y fotos:** en **Inventario** puede guardar un SKU, un código de barras y una foto del producto. En **Ventas**, un lector USB o Bluetooth en modo teclado agrega el producto al carrito al escanear; también puede usar el botón de cámara (en la PC) o buscar por código.
+**Códigos y fotos:** en **Inventario** puede guardar un SKU, un código de barras y una foto del producto; luego puede editarlos en **Almacén → Editar parámetros**. La foto se muestra en el menú digital y en el catálogo de Ventas. En **Ventas**, un lector USB o Bluetooth en modo teclado agrega el producto al carrito al escanear; también puede usar el botón de cámara (en la PC) o buscar por código.
 
 **Descuento por ítem:** en el carrito escriba el descuento en CUP y su motivo. El total y el ticket lo reflejan.
 
@@ -149,7 +149,7 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 
 **Anulación:** el icono de anulación (dueño/supervisor) pide un motivo obligatorio; repone el stock y la venta deja de contar en totales y cierres.
 
-**Caja del turno:** en el cierre indique **fondo inicial**, **retiros**, **ingresos** y **propinas**. El "Total en Caja" se calcula con esos movimientos; las propinas se muestran aparte.
+**Caja del turno:** el botón **Caja** permite registrar retiros, ingresos y propinas durante el turno. En el cierre también puede indicar **fondo inicial**, **retiros**, **ingresos** y **propinas**: el **fondo inicial** es el efectivo con el que abre la caja, los **retiros** el dinero que se saca, los **ingresos** el que se agrega y las **propinas** se registran aparte (no cambian el efectivo esperado). El "Total en Caja" se calcula con esos movimientos.
 
 **PDF:** los botones **PDF** de Ventas, Cierres, Inventario y Movimientos permiten imprimir o guardar el reporte.
 ## 13. Soporte y actualizaciones

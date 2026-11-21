@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useDatabaseStore } from '../../store/dbStore';
 import { useAuthStore } from '../../store/authStore';
-import { Plus, Minus, Trash2, ShoppingCart, CreditCard, Search, X, DollarSign, User, PlusCircle, Users, Loader2, Printer, AlertCircle, ChevronDown, Info, ScanLine, Camera, Undo2, Ban, FileDown } from 'lucide-react';
+import { Plus, Minus, Trash2, ShoppingCart, CreditCard, Search, X, DollarSign, User, PlusCircle, Users, Loader2, Printer, AlertCircle, ChevronDown, Info, ScanLine, Camera, Undo2, Ban, FileDown, Banknote } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
@@ -13,6 +13,7 @@ import { isDateClosed } from '../../lib/dateUtils';
 import { localDb } from '../../lib/db/localClient';
 import { convertUnit, getCompatibleUnits, getUnitType, normalizeUnit, UNIT_LABELS, type UnitAbbrev } from '../../lib/unitConversion';
 import { formatNumber } from '../../lib/formatNumber';
+import { storageUrl } from '../../lib/imageUtils';
 import TicketView from './TicketView';
 
 type PaymentField = 'efectivo' | 'transferencia' | 'usd' | 'eur';
@@ -104,6 +105,13 @@ export default function SalesView() {
   const [cashWithdrawals, setCashWithdrawals] = useState(0);
   const [cashDeposits, setCashDeposits] = useState(0);
   const [cashTips, setCashTips] = useState(0);
+  const [dbCash, setDbCash] = useState({ opening: 0, withdrawals: 0, deposits: 0, tips: 0 });
+  const [showCashModal, setShowCashModal] = useState(false);
+  const [cashForm, setCashForm] = useState<{ type: 'RETIRO' | 'INGRESO' | 'PROPINA'; amount: number; note: string }>({
+    type: 'RETIRO',
+    amount: 0,
+    note: '',
+  });
   const [showClosingModal, setShowClosingModal] = useState(false);
   const [showTicket, setShowTicket] = useState(false);
   const [ticketData, setTicketData] = useState<any>(null);
@@ -478,23 +486,66 @@ export default function SalesView() {
 
   // Recalcular el efectivo esperado al cambiar fondo/retiros/ingresos/devoluciones.
   useEffect(() => {
-    setClosingAmount(todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits);
-  }, [todayTotal, todayDiscounts, todayRefunds, openingCash, cashWithdrawals, cashDeposits]);
+    setClosingAmount(
+      todayTotal - todayDiscounts - todayRefunds
+      + openingCash - cashWithdrawals + cashDeposits
+      + dbCash.opening - dbCash.withdrawals + dbCash.deposits
+    );
+  }, [todayTotal, todayDiscounts, todayRefunds, openingCash, cashWithdrawals, cashDeposits, dbCash]);
 
-  // Devoluciones del día (para el cierre).
+  // Cargar devoluciones y movimientos de caja ya registrados en el turno.
   useEffect(() => {
     if (!showClosingModal) return;
     let cancelled = false;
     (async () => {
-      const { data } = await localDb.from('sale_returns').select('*').eq('user_id', user?.id || 'owner');
+      const [returnsRes, cashRes] = await Promise.all([
+        localDb.from('sale_returns').select('*').eq('user_id', user?.id || 'owner'),
+        localDb.from('cash_movements').select('*').eq('user_id', user?.id || 'owner'),
+      ]);
       if (cancelled) return;
-      const sum = (data || [])
+      const sumReturns = (returnsRes.data || [])
         .filter((r: any) => String(r.date).slice(0, 10) === closingDate)
         .reduce((acc: number, r: any) => acc + Number(r.total || 0), 0);
-      setTodayRefunds(sum);
+      setTodayRefunds(sumReturns);
+
+      const cashRows = (cashRes.data || []).filter((r: any) =>
+        String(r.date).slice(0, 10) === closingDate &&
+        (!doubleShiftEnabled || String(r.shift || '1') === targetShift)
+      );
+      const sumType = (type: string) => cashRows
+        .filter((r: any) => r.type === type)
+        .reduce((acc: number, r: any) => acc + Number(r.amount || 0), 0);
+      setDbCash({
+        opening: sumType('APERTURA'),
+        withdrawals: sumType('RETIRO'),
+        deposits: sumType('INGRESO'),
+        tips: sumType('PROPINA'),
+      });
     })();
     return () => { cancelled = true; };
-  }, [showClosingModal, closingDate, user?.id]);
+  }, [showClosingModal, closingDate, targetShift, doubleShiftEnabled, user?.id]);
+
+  const saveCashMovement = async () => {
+    if (!(cashForm.amount > 0)) {
+      toast.error('Indique un monto mayor que 0');
+      return;
+    }
+    const res = await addCashMovement({
+      date: new Date().toISOString(),
+      type: cashForm.type,
+      amount: cashForm.amount,
+      note: cashForm.note || null,
+      shift: currentShift,
+      register_id: null,
+    });
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo registrar el movimiento');
+      return;
+    }
+    toast.success('Movimiento de caja registrado');
+    setShowCashModal(false);
+    setCashForm({ type: 'RETIRO', amount: 0, note: '' });
+  };
   
   // Función helper para parsear payment_method legacy (ventas históricas)
   const parsePaymentMethodLegacy = (paymentMethod: string | null | undefined) => {
@@ -533,7 +584,7 @@ export default function SalesView() {
       const usdConverted = user?.usdEnabled ? currencyBreakdown.usd * (user?.usdRate || 0) : 0;
       const eurConverted = user?.eurEnabled ? currencyBreakdown.eur * (user?.eurRate || 0) : 0;
       const totalBreakdown = currencyBreakdown.cupEfectivo + currencyBreakdown.cupTransfer + usdConverted + eurConverted;
-      const expectedTotal = todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits;
+      const expectedTotal = todayTotal - todayDiscounts - todayRefunds + openingCash - cashWithdrawals + cashDeposits + dbCash.opening - dbCash.withdrawals + dbCash.deposits;
       
       if (Math.abs(totalBreakdown - expectedTotal) > 1) {
         setClosingWarningData({
@@ -564,9 +615,9 @@ export default function SalesView() {
         usd: currencyBreakdown.usd,
         eur: currencyBreakdown.eur,
         sales_count: todaySales.length,
-        opening_cash: openingCash,
-        withdrawals: cashWithdrawals,
-        tips: cashTips,
+        opening_cash: dbCash.opening + openingCash,
+        withdrawals: dbCash.withdrawals + cashWithdrawals,
+        tips: dbCash.tips + cashTips,
       });
       if (result.success) {
         const cashMovements = [
@@ -595,9 +646,9 @@ export default function SalesView() {
           total_discounts: todayDiscounts,
           total_refunds: todayRefunds,
           closing_amount: closingAmount,
-          opening_cash: openingCash,
-          withdrawals: cashWithdrawals,
-          tips: cashTips,
+          opening_cash: dbCash.opening + openingCash,
+          withdrawals: dbCash.withdrawals + cashWithdrawals,
+          tips: dbCash.tips + cashTips,
           created_by_name: selectedEmployee ? selectedEmployee.name : user.name,
         });
         toast.success(doubleShiftEnabled ? `Cierre de ${closingDate} · Turno ${targetShift} registrado` : `Cierre de caja del ${closingDate} registrado`);
@@ -1131,6 +1182,16 @@ setShowTicket(true);
             <Button
               variant="outline"
               size="sm"
+              onClick={() => setShowCashModal(true)}
+              className="gap-2"
+              title="Registrar retiro, ingreso o propina del turno"
+            >
+              <Banknote className="h-4 w-4" />
+              Caja
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={openClosingModal}
               disabled={todaySales.length === 0 || isTargetClosed}
               className="gap-2"
@@ -1340,9 +1401,17 @@ setShowTicket(true);
                 onClick={() => addToCart(product)}
                 className="flex flex-col items-center justify-center rounded-xl border border-border/50 bg-bg/50 p-3 sm:p-4 text-center transition-all duration-300 hover:border-primary/50 hover:bg-primary/10 hover:shadow-[0_0_15px_-3px_rgba(205,164,52,0.2)] focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-surface"
               >
-                <div className="mb-2 rounded-full bg-surface-hover p-3 text-text-secondary transition-colors group-hover:text-primary group-hover:bg-primary/20">
-                  <ShoppingCart className="h-6 w-6" />
-                </div>
+                {(product as any).photo_path ? (
+                  <img
+                    src={storageUrl((product as any).photo_path) || ''}
+                    alt={product.name}
+                    className="mb-2 h-16 w-16 rounded-lg border border-border object-cover"
+                  />
+                ) : (
+                  <div className="mb-2 rounded-full bg-surface-hover p-3 text-text-secondary transition-colors group-hover:text-primary group-hover:bg-primary/20">
+                    <ShoppingCart className="h-6 w-6" />
+                  </div>
+                )}
                 <h3 className="font-medium text-text line-clamp-2 text-sm">{product.name}</h3>
                 <p className="mt-1 font-mono text-sm font-bold text-primary drop-shadow-[0_0_8px_rgba(205,164,52,0.3)]">
                   ${product.price.toFixed(2)}
@@ -2137,6 +2206,10 @@ setShowTicket(true);
               </div>
             </div>
 
+            <p className="mb-4 text-[11px] leading-relaxed text-text-secondary">
+              <strong>Fondo inicial:</strong> efectivo con el que abre el turno. <strong>Retiros:</strong> dinero que se saca de la caja. <strong>Ingresos:</strong> dinero que se agrega. <strong>Propinas:</strong> se registran aparte y no modifican el efectivo esperado.
+            </p>
+
             {closingSales.length > 0 && (
               <div className="mb-4">
                 <h3 className="text-sm font-semibold text-text mb-2">Ventas del turno</h3>
@@ -2269,6 +2342,58 @@ setShowTicket(true);
 </div>
         )}
       
+      {showCashModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-border/50 bg-surface p-5 shadow-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-text">Movimiento de caja</h2>
+              <button onClick={() => setShowCashModal(false)} className="rounded-full p-2 text-text-secondary hover:bg-surface-hover">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Tipo</label>
+                <select
+                  value={cashForm.type}
+                  onChange={e => setCashForm({ ...cashForm, type: e.target.value as 'RETIRO' | 'INGRESO' | 'PROPINA' })}
+                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+                >
+                  <option value="RETIRO">Retiro de caja</option>
+                  <option value="INGRESO">Ingreso de caja</option>
+                  <option value="PROPINA">Propina</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Monto (CUP)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="font-mono"
+                  value={cashForm.amount || ''}
+                  onChange={e => setCashForm({ ...cashForm, amount: Number(e.target.value) || 0 })}
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-text-secondary block mb-1">Nota (opcional)</label>
+                <textarea
+                  rows={2}
+                  value={cashForm.note}
+                  onChange={e => setCashForm({ ...cashForm, note: e.target.value })}
+                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+                  placeholder="Ej: pago a proveedor, propina del turno…"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowCashModal(false)}>Cancelar</Button>
+              <Button onClick={saveCashMovement}>Registrar</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showScanner && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-border/50 bg-surface p-4 shadow-2xl">

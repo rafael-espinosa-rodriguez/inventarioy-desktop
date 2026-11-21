@@ -715,6 +715,18 @@ export default function DailyClosingsView() {
                 <span>Devoluciones:</span>
                 <span className="font-mono">-${Number(selectedClosing.total_refunds || 0).toFixed(2)}</span>
               </div>
+              <div className="flex justify-between text-sm text-text-secondary">
+                <span>Fondo inicial:</span>
+                <span className="font-mono">${Number(selectedClosing.opening_cash || 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-text-secondary">
+                <span>Retiros de caja:</span>
+                <span className="font-mono">-${Number(selectedClosing.withdrawals || 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-text-secondary">
+                <span>Propinas (aparte):</span>
+                <span className="font-mono">${Number(selectedClosing.tips || 0).toFixed(2)}</span>
+              </div>
               <div className="flex justify-between text-lg font-bold border-t border-border/50 pt-2">
                 <span className="text-text">Total en Caja:</span>
                 <span className="font-mono text-primary">${Number(selectedClosing.closing_amount || 0).toFixed(2)}</span>

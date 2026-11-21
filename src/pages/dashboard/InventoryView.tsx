@@ -20,23 +20,7 @@ import {
 import { validateNumber, normalizeStr, isActive, uuid } from '../../lib/utils';
 import { useRealTimeClock } from '../../lib/hooks/useRealTimeClock';
 import { localDb } from '../../lib/db/localClient';
-
-async function compressImage(file: File): Promise<Blob> {
-  try {
-    const bitmap = await createImageBitmap(file);
-    const max = 800;
-    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return file;
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    return await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b || file), 'image/jpeg', 0.8));
-  } catch {
-    return file;
-  }
-}
+import { compressImage } from '../../lib/imageUtils';
 
 const DEFAULT_CATEGORIES = [
   "Bebidas y Refrescos",

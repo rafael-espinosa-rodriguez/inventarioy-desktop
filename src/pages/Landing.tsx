@@ -1,4 +1,4 @@
-import { Menu, X, Zap, Play, MessageCircle, Pin, ShoppingCart, Calculator, WifiOff, Hash, ShieldCheck, ReceiptText, Banknote, Printer, Download, SlidersHorizontal, Monitor, Terminal, Laptop, ArrowLeftRight, KeyRound, Save, BookOpen, Store, PackageX, Camera, MonitorPlay, ExternalLink, CheckCircle2, Star, TriangleAlert, Trash2, Wallet, Rocket, User, LogIn, UserPlus, Users, DollarSign } from 'lucide-react';
+import { Menu, X, Zap, Play, MessageCircle, Pin, ShoppingCart, Calculator, WifiOff, Hash, ShieldCheck, ReceiptText, Banknote, Printer, Download, Monitor, Terminal, Laptop, ArrowLeftRight, KeyRound, Save, BookOpen, Store, PackageX, Camera, MonitorPlay, ExternalLink, CheckCircle2, Star, TriangleAlert, Trash2, Wallet, Rocket, User, LogIn, UserPlus, Users, DollarSign } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { Button } from '../components/ui/button';
@@ -11,14 +11,6 @@ import { useAuthStore } from '../store/authStore';
 gsap.registerPlugin(ScrollTrigger);
 
 type Billing = 'mensual' | 'anual' | 'vitalicio';
-
-const BUSINESS_PRESETS = [
-  { id: 'paladar', label: 'Paladares' },
-  { id: 'cafeteria', label: 'Cafeterías' },
-  { id: 'bar', label: 'Bares & Pubs' },
-  { id: 'panaderia', label: 'Panaderías' },
-  { id: 'tienda', label: 'Tiendas' },
-];
 
 const FEATURES = [
   'Productos y categorías ilimitadas',
@@ -51,7 +43,6 @@ export default function Landing() {
   const [showTutorialPrompt, setShowTutorialPrompt] = useState(() => shouldShowTutorialPrompt());
   const [billing, setBilling] = useState<Billing>('mensual');
   const [activeTab, setActiveTab] = useState<'pos' | 'receta'>('pos');
-  const [preset, setPreset] = useState('paladar');
   const [dishes, setDishes] = useState(40);
   const [grams, setGrams] = useState(20);
   const [costPerKg, setCostPerKg] = useState(1850);
@@ -222,28 +213,6 @@ export default function Landing() {
                 y caídas de conexión.
               </p>
 
-              {/* Selector de sector */}
-              <div className="hero-fade mb-6 rounded-lg border border-border bg-surface p-3.5">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-primary">
-                    <SlidersHorizontal className="h-3.5 w-3.5" />
-                    Elija su sector:
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-1.5 font-mono text-xs sm:grid-cols-5">
-                  {BUSINESS_PRESETS.map((b) => (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => setPreset(b.id)}
-                      className={`rounded border px-2 py-1.5 text-center transition-all ${preset === b.id ? 'border-primary bg-surface-hover font-medium text-text' : 'border-border bg-bg text-text-secondary hover:text-text'}`}
-                    >
-                      {b.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               <div className="hero-fade space-y-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <Link to="/register" className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3.5 text-sm font-bold tracking-wide text-black shadow-lg transition-all hover:bg-primary-hover active:scale-95 sm:flex-initial">
@@ -292,11 +261,10 @@ export default function Landing() {
                     <span className="h-3 w-3 rounded-full bg-danger/80"></span>
                     <span className="h-3 w-3 rounded-full bg-primary/80"></span>
                     <span className="h-3 w-3 rounded-full bg-success/80"></span>
-                    <span className="ml-2 font-mono text-xs font-medium text-text-secondary">TERMINAL-01 // SU NEGOCIO</span>
+                    
                   </div>
                   <div className="flex items-center gap-1.5 rounded bg-surface px-2 py-0.5 font-mono text-xs text-success">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span>
-                    <span>LOCAL · SIN INTERNET</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 border-b border-border bg-surface px-3 pt-2">
@@ -405,10 +373,6 @@ export default function Landing() {
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center justify-between pt-1 font-mono text-[11px] text-text-secondary">
-                      <span>Base de datos local en su equipo (WAL atómico)</span>
-                      <span className="font-semibold text-success">SIN INTERNET</span>
-                    </div>
                   </div>
                 ) : (
                   <div className="space-y-4 p-4">
@@ -504,10 +468,6 @@ export default function Landing() {
                   Construido para resistir lo que tumba a los demás.
                 </h2>
               </div>
-              <p className="mt-4 max-w-md text-sm leading-relaxed text-text-secondary md:mt-0 md:text-base">
-                Sin mensualidades en dólares a servidores extranjeros que se vuelven
-                inaccesibles cuando falla la conexión.
-              </p>
             </div>
             <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
               <div className="fade-up flex flex-col justify-between rounded-xl border border-border bg-surface p-6 transition-all hover:border-primary/40 md:p-8">
@@ -983,7 +943,6 @@ export default function Landing() {
           <div>
             <h4 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-text">Seguridad y datos</h4>
             <ul className="space-y-2 text-text-secondary">
-              <li><span>Base de datos SQLite local (WAL)</span></li>
               <li><span>Cero almacenamiento en nube</span></li>
               <li><span>Respaldos automáticos locales</span></li>
               <li><span>Auditoría de acciones por turno</span></li>
