@@ -169,9 +169,19 @@ export function exportReportPdf(
     .map(r => `<tr>${r.map(c => `<td>${escape(c)}</td>`).join('')}</tr>`)
     .join('');
 
-  const win = window.open('', '_blank', 'width=900,height=700');
-  if (!win) return;
-  win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8" />
+  // Electron bloquea window.open (setWindowOpenHandler), por eso el reporte se
+  // imprime desde un iframe oculto del mismo documento (funciona offline).
+  const existing = document.getElementById('report-pdf-frame');
+  if (existing) existing.remove();
+  const iframe = document.createElement('iframe');
+  iframe.id = 'report-pdf-frame';
+  iframe.setAttribute('data-report-pdf', title);
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument;
+  if (!doc) { iframe.remove(); return; }
+  doc.open();
+  doc.write(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8" />
     <title>${escape(title)}</title>
     <style>
       body { font-family: Arial, Helvetica, sans-serif; padding: 24px; color: #111; }
@@ -186,7 +196,13 @@ export function exportReportPdf(
     <h1>${escape(title)}</h1>
     ${subtitle ? `<p class="sub">${escape(subtitle)}</p>` : ''}
     <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
-    <script>window.onload = function () { window.print(); };</script>
     </body></html>`);
-  win.document.close();
+  doc.close();
+  setTimeout(() => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } catch { /* si falla la impresión, el reporte queda generado */ }
+    setTimeout(() => iframe.remove(), 3000);
+  }, 250);
 }

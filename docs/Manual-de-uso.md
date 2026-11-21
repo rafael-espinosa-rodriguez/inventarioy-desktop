@@ -151,7 +151,9 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 
 **Caja del turno:** el botón **Caja** permite registrar retiros, ingresos y propinas durante el turno. En el cierre también puede indicar **fondo inicial**, **retiros**, **ingresos** y **propinas**: el **fondo inicial** es el efectivo con el que abre la caja, los **retiros** el dinero que se saca, los **ingresos** el que se agrega y las **propinas** se registran aparte (no cambian el efectivo esperado). El "Total en Caja" se calcula con esos movimientos.
 
-**PDF:** los botones **PDF** de Ventas, Cierres, Inventario y Movimientos permiten imprimir o guardar el reporte.
+**PDF:** los botones **PDF** de Ventas, Cierres, Inventario y Movimientos abren el reporte listo para imprimir o guardar como PDF desde el diálogo de impresión de Windows.
+
+**Turno cerrado:** una vez registrado el cierre del turno no se pueden añadir movimientos de caja, devoluciones ni anulaciones de ese turno.
 ## 13. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).

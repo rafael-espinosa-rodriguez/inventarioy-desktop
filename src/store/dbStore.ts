@@ -2248,6 +2248,15 @@ const saleId = uuid();
   addCashMovement: async (movement) => {
     const user = useAuthStore.getState().user;
     if (!user) return { success: false, error: 'No hay usuario autenticado' };
+    // Un turno cerrado no admite movimientos de caja (defensa además de la UI).
+    const date = new Date(movement.date || new Date().toISOString()).toISOString().split('T')[0];
+    const shift = movement.shift || '1';
+    const closed = get().dailyClosings.some(c =>
+      String(c.closing_date).slice(0, 10) === date && String(c.shift || '1') === shift
+    );
+    if (closed) {
+      return { success: false, error: 'El turno ya está cerrado; no se pueden registrar movimientos de caja' };
+    }
     try {
       const { error } = await localDb.from('cash_movements').insert({
         ...movement,

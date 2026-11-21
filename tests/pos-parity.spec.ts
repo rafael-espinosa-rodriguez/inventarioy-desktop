@@ -230,7 +230,7 @@ test('movimientos de caja se registran y quedan en la base', async ({ request })
   expect(rows.some(r => r.id === `cash-${suffix}`)).toBe(true);
 });
 
-test('los botones PDF de Ventas y Cierres abren un reporte imprimible', async ({ page }) => {
+test('los botones PDF de Ventas y Cierres generan el reporte', async ({ page }) => {
   await page.context().addInitScript(() => {
     // Evita que el diálogo de impresión bloquee la ventana durante el test.
     window.print = () => {};
@@ -240,24 +240,33 @@ test('los botones PDF de Ventas y Cierres abren un reporte imprimible', async ({
   await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(2000);
   await dismissPinModal(page);
-  const salesPopupPromise = page.context().waitForEvent('page');
   await page.getByRole('button', { name: 'PDF' }).first().click();
-  const salesPopup = await salesPopupPromise;
-  await salesPopup.waitForLoadState('domcontentloaded');
-  expect(await salesPopup.title()).toContain('Ventas');
-  await salesPopup.close();
+  await expect(page.locator('iframe[data-report-pdf="Ventas del día"]')).toBeAttached({ timeout: 5000 });
+  await page.waitForTimeout(3300);
 
   await page.goto(APP_URL + '/dashboard/closings', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(2000);
   await dismissPinModal(page);
-  const closingsPopupPromise = page.context().waitForEvent('page');
   await page.getByRole('button', { name: 'PDF' }).first().click();
-  const closingsPopup = await closingsPopupPromise;
-  await closingsPopup.waitForLoadState('domcontentloaded');
-  expect(await closingsPopup.title()).toContain('Cierres');
-  await closingsPopup.close();
+  await expect(page.locator('iframe[data-report-pdf="Cierres de caja"]')).toBeAttached({ timeout: 5000 });
 });
 
+test('el botón de cámara abre el escáner y activa el video', async ({ page }) => {
+  await ensureLoggedIn(page);
+  await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await dismissPinModal(page);
+  await page.getByTitle('Escanear con cámara').click();
+  await expect(page.getByRole('heading', { name: 'Escanear código' })).toBeVisible({ timeout: 10000 });
+  await expect.poll(
+    async () => page.evaluate(() => {
+      const video = document.querySelector('video');
+      return !!(video && (video as HTMLVideoElement).srcObject);
+    }),
+    { timeout: 10000 }
+  ).toBe(true);
+  await page.getByRole('button', { name: 'Cerrar escáner' }).click();
+});
 test('Gráficos muestra la Evolución de Ventas como gráfico de líneas', async ({ page, request }) => {
   const warehouses = await queryRows(request, 'warehouses', [{ op: 'eq', column: 'user_id', value: 'owner' }]);
   const warehouseId = warehouses.find(w => w.is_main)?.id || warehouses[0]?.id;
@@ -314,4 +323,26 @@ test('importa .xlsx directo con validaciones', async ({ page, request }) => {
   expect(a).toBeTruthy();
   expect(a.sku).toBe(`SKU-X-${suffix}`);
   expect(products.some(p => p.name.toLowerCase() === nameB.toLowerCase())).toBe(true);
+});
+test('Caja se bloquea cuando el turno ya está cerrado', async ({ page, request }) => {
+  const now = new Date().toISOString();
+  const localDate = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const closingId = `cl-${suffix}`;
+  await insertRow(request, 'daily_closings', {
+    id: closingId, user_id: 'owner', closing_date: localDate, shift: '1',
+    total_sales: 0, total_discounts: 0, total_refunds: 0, closing_amount: 0,
+    sales_count: 0, created_at: now,
+  });
+  try {
+    await ensureLoggedIn(page);
+    await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(2000);
+    await dismissPinModal(page);
+    await expect(page.getByRole('button', { name: 'Caja' })).toBeDisabled();
+  } finally {
+    await call(request, 'POST', '/api/query', {
+      table: 'daily_closings', method: 'delete',
+      filters: [{ op: 'eq', column: 'id', value: closingId }],
+    });
+  }
 });

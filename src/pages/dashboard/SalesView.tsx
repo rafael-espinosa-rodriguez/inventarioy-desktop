@@ -526,6 +526,11 @@ export default function SalesView() {
   }, [showClosingModal, closingDate, targetShift, doubleShiftEnabled, user?.id]);
 
   const saveCashMovement = async () => {
+    if (isSellingBlocked || isTargetClosed) {
+      toast.error('El turno ya está cerrado; no se pueden registrar movimientos de caja');
+      setShowCashModal(false);
+      return;
+    }
     if (!(cashForm.amount > 0)) {
       toast.error('Indique un monto mayor que 0');
       return;
@@ -1183,8 +1188,9 @@ setShowTicket(true);
               variant="outline"
               size="sm"
               onClick={() => setShowCashModal(true)}
+              disabled={isSellingBlocked || isTargetClosed}
               className="gap-2"
-              title="Registrar retiro, ingreso o propina del turno"
+              title={isSellingBlocked || isTargetClosed ? 'El turno está cerrado' : 'Registrar retiro, ingreso o propina del turno'}
             >
               <Banknote className="h-4 w-4" />
               Caja
@@ -2399,7 +2405,7 @@ setShowTicket(true);
           <div className="w-full max-w-lg rounded-2xl border border-border/50 bg-surface p-4 shadow-2xl">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-bold text-text">Escanear código</h2>
-              <button onClick={() => setShowScanner(false)} className="rounded-full p-2 text-text-secondary hover:bg-surface-hover">
+              <button onClick={() => setShowScanner(false)} aria-label="Cerrar escáner" className="rounded-full p-2 text-text-secondary hover:bg-surface-hover">
                 <X className="h-5 w-5" />
               </button>
             </div>

@@ -31,6 +31,10 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
     actionTimeout: 15000,
     navigationTimeout: 30000,
+    permissions: ['camera'],
+    launchOptions: {
+      args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    },
     screenshot: 'only-on-failure',
     trace: 'on-first-retry',
   },
