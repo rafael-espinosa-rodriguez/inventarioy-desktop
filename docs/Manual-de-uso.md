@@ -154,6 +154,9 @@ Opcionalmente puede activar **dos turnos** (por ejemplo, mañana y tarde) para t
 **PDF:** los botones **PDF** de Ventas, Cierres, Inventario y Movimientos abren el reporte listo para imprimir o guardar como PDF desde el diálogo de impresión de Windows.
 
 **Turno cerrado:** una vez registrado el cierre del turno no se pueden añadir movimientos de caja, devoluciones ni anulaciones de ese turno.
+**Listas de precios:** en **Configuración → Listas de precios** cree sus listas (por ejemplo Minorista y Mayorista), marque la predeterminada y asigne qué roles usan cada una. En **Almacén → Editar producto → Precios** puede fijar el precio por lista y un precio en USD de referencia. En **Ventas** se aplica automáticamente la lista del rol y se muestra "Lista: …".
+
+**Comandas a cocina:** cree las mesas en **Configuración → Mesas**. En **Ventas** elija la mesa, agregue los productos y pulse **Enviar a cocina**. La pantalla **Cocina** (menú lateral, o `/dashboard/kitchen` desde otra PC/tablet en la misma red) muestra las comandas y permite avanzar **Iniciar → Listo → Entregado**. Al cobrar la mesa se registra la venta y se descuenta el stock.
 ## 13. Soporte y actualizaciones
 
 - **Soporte:** incluido según las condiciones de su contrato (ver hoja de entrega).

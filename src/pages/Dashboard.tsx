@@ -42,6 +42,7 @@ const MovementsView = lazy(() => import('./dashboard/MovementsView'));
 const SalesView = lazy(() => import('./dashboard/SalesView'));
 const HRView = lazy(() => import('./dashboard/HRView'));
 const RecipesView = lazy(() => import('./dashboard/RecipesView'));
+const KitchenView = lazy(() => import('./dashboard/KitchenView'));
 const AnalysisView = lazy(() => import('./dashboard/AnalysisView'));
 const ChartsView = lazy(() => import('./dashboard/ChartsView'));
 const ConsumptionView = lazy(() => import('./dashboard/ConsumptionView'));
@@ -123,6 +124,7 @@ export default function Dashboard() {
     { name: 'Cierres de Caja', href: '/dashboard/closings', icon: DollarSign },
     // PRODUCCIÓN
     { name: 'Recetas', href: '/dashboard/recipes', icon: ChefHat },
+    { name: 'Cocina', href: '/dashboard/kitchen', icon: ChefHat },
     { name: 'Consumo', href: '/dashboard/consumption', icon: TrendingUp },
     // ANÁLISIS
     { name: 'Análisis', href: '/dashboard/analysis', icon: BarChart3 },
@@ -545,6 +547,7 @@ export default function Dashboard() {
                 <Route path="/closings" element={<DailyClosingsView />} />
                 <Route path="/hr" element={<HRView />} />
                 <Route path="/recipes" element={<RecipesView />} />
+                <Route path="/kitchen" element={<KitchenView />} />
                 <Route path="/consumption" element={<ConsumptionView />} />
                 <Route path="/analysis" element={<AnalysisView />} />
                 <Route path="/charts" element={<ChartsView />} />

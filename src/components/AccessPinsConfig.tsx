@@ -20,6 +20,8 @@ const ALL_MODULES: { key: string; label: string }[] = [
   { key: 'analysis', label: 'Análisis' },
   { key: 'filtered', label: 'Centro Filtrado' },
   { key: 'hr', label: 'RR.HH.' },
+  { key: 'pricing', label: 'Precios' },
+  { key: 'kitchen', label: 'Cocina' },
   { key: 'settings', label: 'Configuración' },
 ];
 

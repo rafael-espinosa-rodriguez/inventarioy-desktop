@@ -83,6 +83,8 @@ export default function StockView() {
   });
   const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
   const [editPhotoPreview, setEditPhotoPreview] = useState('');
+  const [editListPrices, setEditListPrices] = useState<Record<string, number>>({});
+  const [editPriceUsd, setEditPriceUsd] = useState(0);
   const [ropAutoDetail, setRopAutoDetail] = useState<{dailyAvg: number; suggested: number} | null>(null);
   // Centro de alertas locales (spec 006).
   const [alerts, setAlerts] = useState<{ kind: string; title: string; detail: string; count: number; names: string[]; link: string }[]>([]);
@@ -119,6 +121,9 @@ export default function StockView() {
   const currentWarehouseId = useDatabaseStore((state) => state.currentWarehouseId);
   const warehouses = useDatabaseStore((state) => state.warehouses);
   const productWarehouse = useDatabaseStore((state) => state.productWarehouse);
+  const priceLists = useDatabaseStore((state) => state.priceLists);
+  const productPrices = useDatabaseStore((state) => state.productPrices);
+  const setProductPrices = useDatabaseStore((state) => state.setProductPrices);
   const currentWarehouse = warehouses.find(w => w.id === currentWarehouseId);
 
   const canEdit = (): boolean => {
@@ -285,6 +290,12 @@ export default function StockView() {
     });
     setEditPhotoFile(null);
     setEditPhotoPreview(storageUrl(product.photo_path) || '');
+    const listPrices: Record<string, number> = {};
+    for (const pp of productPrices) {
+      if (pp.product_id === product.id) listPrices[pp.price_list_id] = Number(pp.price) || 0;
+    }
+    setEditListPrices(listPrices);
+    setEditPriceUsd(Number(product.price_usd) || 0);
     setRopAutoDetail(null);
   };
 
@@ -293,6 +304,8 @@ export default function StockView() {
     setEditParams({ rop: 0, price: 0, sku: '', barcode: '', photo_path: '' });
     setEditPhotoFile(null);
     setEditPhotoPreview('');
+    setEditListPrices({});
+    setEditPriceUsd(0);
     setRopAutoDetail(null);
   };
 
@@ -363,6 +376,18 @@ export default function StockView() {
         updates.photo_path = `products/${fileName}`;
       }
       await updateProduct(editingProduct.id, updates);
+      const listPricesPayload = Object.entries(editListPrices)
+        .filter(([, value]) => Number(value) > 0)
+        .map(([price_list_id, price]) => ({ price_list_id, price: Number(price) }));
+      const priceRes = await setProductPrices(
+        editingProduct.id,
+        listPricesPayload,
+        editPriceUsd > 0 ? editPriceUsd : null
+      );
+      if (!priceRes.success) {
+        toast.error(priceRes.error || 'No se pudieron guardar los precios por lista');
+        return;
+      }
       await logAction('stock', 'EDITAR_PARAMETROS', {
         product_id: editingProduct.id,
         product_name: editingProduct.name,
@@ -372,6 +397,8 @@ export default function StockView() {
           sku: updates.sku,
           barcode: updates.barcode,
           photo: updates.photo_path || undefined,
+          list_prices: listPricesPayload.length,
+          price_usd: editPriceUsd || null,
         },
       });
       toast.success('Parámetros actualizados exitosamente');
@@ -981,6 +1008,50 @@ export default function StockView() {
                 {editPhotoPreview && (
                   <img src={editPhotoPreview} alt="Foto del producto" className="h-20 w-20 rounded-lg border border-border object-cover" />
                 )}
+              </div>
+
+              <div className="space-y-2 border-t border-border/50 pt-3">
+                <Label>Precios por lista (CUP)</Label>
+                {priceLists.length === 0 ? (
+                  <p className="text-xs text-text-secondary">
+                    Cree listas de precios en Configuración → Listas de precios.
+                  </p>
+                ) : (
+                  priceLists.map(list => (
+                    <div key={list.id} className="flex items-center gap-2">
+                      <span className="flex-1 text-xs text-text-secondary">
+                        {list.name}
+                        {(list.is_default === true || list.is_default === 1) ? ' (predeterminada)' : ''}
+                      </span>
+                      <Input
+                        id={`price_list_${list.id}`}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="w-28 font-mono"
+                        placeholder="0.00"
+                        value={editListPrices[list.id] ?? ''}
+                        onChange={(e) => {
+                          const value = Math.max(0, Number(e.target.value) || 0);
+                          setEditListPrices(prev => ({ ...prev, [list.id]: value }));
+                        }}
+                      />
+                    </div>
+                  ))
+                )}
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="flex-1 text-xs text-text-secondary">Precio en USD (referencia)</span>
+                  <Input
+                    id="price_usd_edit"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-28 font-mono"
+                    placeholder="0.00"
+                    value={editPriceUsd || ''}
+                    onChange={(e) => setEditPriceUsd(Math.max(0, Number(e.target.value) || 0))}
+                  />
+                </div>
               </div>
             </div>
 

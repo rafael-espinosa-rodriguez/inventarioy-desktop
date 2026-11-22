@@ -313,8 +313,8 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const LEGACY_ROLE_MODULES: Record<string, string[]> = {
-  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
+  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'pricing', 'kitchen'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'pricing', 'kitchen'],
   admin: ['inventory', 'movements', 'transit'],
   supervisor: ['sales', 'closings'],
   clerk: ['sales'],
@@ -338,6 +338,7 @@ const MODULE_BY_PATH: Record<string, string> = {
   '/filtered': 'filtered',
   '/settings': 'settings',
   '/action-logs': 'hr',
+  '/kitchen': 'kitchen',
 };
 
 function getRoleModules(roleId: string): string[] {
@@ -375,6 +376,13 @@ const TABLE_MODULES: Record<string, TableModuleRule> = {
   sale_returns: 'sales',
   sale_return_items: 'sales',
   cash_movements: 'sales',
+  price_lists: 'pricing',
+  price_list_roles: 'pricing',
+  product_prices: 'pricing',
+  // Comandas: ventas crea, cocina actualiza estados.
+  tables: { insert: ['sales', 'kitchen'], update: ['sales', 'kitchen'], delete: ['sales'] },
+  kitchen_orders: { insert: ['sales', 'kitchen'], update: ['sales', 'kitchen'], delete: ['sales'] },
+  kitchen_order_items: { insert: ['sales', 'kitchen'], update: ['sales', 'kitchen'], delete: ['sales'] },
   pending_accounts: 'sales',
   payments: 'sales',
   // products/movements/transit/product_warehouse son tablas operativas que
@@ -1217,12 +1225,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           const saleId = crypto.randomUUID();
           const registerId = sess?.register_id || null;
           runRaw(
-            `INSERT INTO sales (id, user_id, employee_id, total_amount, date, sale_type, is_account_house, notes, discount, payment_method, efectivo, transferencia, usd, eur, register_id, shift, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO sales (id, user_id, employee_id, total_amount, date, sale_type, is_account_house, notes, discount, payment_method, efectivo, transferencia, usd, eur, register_id, shift, price_list_id, price_list_name, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               saleId, 'owner', sale.employee_id || null, sale.total_amount, sale.date, sale.sale_type || 'SALON',
               sale.is_account_house ? 1 : 0, sale.notes || null, sale.discount || 0, sale.payment_method || null,
-              sale.efectivo || 0, sale.transferencia || 0, sale.usd || 0, sale.eur || 0, registerId, saleShift, now,
+              sale.efectivo || 0, sale.transferencia || 0, sale.usd || 0, sale.eur || 0, registerId, saleShift,
+              sale.price_list_id || null, sale.price_list_name || null, now,
             ]
           );
           const saleItems = (sale.items || []).map((item: any) => ({
@@ -1279,6 +1288,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
             runRaw('UPDATE products SET in_transit = ?, updated_at = ? WHERE id = ?', [newInTransit, now, ci.productId]);
           }
 
+          if (sale.kitchen_order_id) {
+            runRaw(
+              'UPDATE kitchen_orders SET status = ?, sale_id = ?, delivered_at = ?, updated_at = ? WHERE id = ?',
+              ['delivered', saleId, now, now, String(sale.kitchen_order_id)]
+            );
+          }
+
           return { saleId, saleItems, now };
         });
         const outItems = result.saleItems.map((si: any) => ({
@@ -1306,6 +1322,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
               eur: sale.eur || 0,
               register_id: sess?.register_id || null,
               shift: saleShift,
+              price_list_id: sale.price_list_id || null,
+              price_list_name: sale.price_list_name || null,
               created_at: result.now,
             },
             items: outItems,
@@ -1319,6 +1337,83 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al registrar la venta', code: 'SALE_ERROR' } });
       }
     }
+    if (fn === 'kitchen_send') {
+      const role = getRequestRole(request);
+      if (role === null) {
+        return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (!roleAllowed('kitchen_orders', 'insert', role)) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu rol no tiene permiso para enviar comandas.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (isWriteBlockedByLicense()) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu licencia de InventarioY está vencida. No se pudo guardar el cambio. Activa tu licencia para volver a editar.', code: 'LICENSE_EXPIRED' } });
+      }
+      const tableId = String(args?.table_id || '');
+      const items = Array.isArray(args?.items) ? args.items : [];
+      if (!tableId || items.length === 0) {
+        return reply.code(400).send({ data: null, error: { message: 'Faltan la mesa o los ítems de la comanda' } });
+      }
+      try {
+        const result = transaction(() => {
+          const now = new Date().toISOString();
+          const openOrder = getRaw<any>(
+            "SELECT * FROM kitchen_orders WHERE table_id = ? AND status NOT IN ('delivered','cancelled') ORDER BY opened_at DESC LIMIT 1",
+            [tableId]
+          );
+          let orderId = openOrder?.id as string | undefined;
+          if (orderId) {
+            runRaw('UPDATE kitchen_orders SET status = ?, ready_at = NULL, updated_at = ? WHERE id = ?', ['pending', now, orderId]);
+          } else {
+            orderId = crypto.randomUUID();
+            runRaw(
+              `INSERT INTO kitchen_orders (id, user_id, table_id, status, notes, opened_at, created_by, created_at, updated_at)
+               VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+              [orderId, 'owner', tableId, String(args?.notes || '') || null, now, role, now, now]
+            );
+          }
+          for (const item of items) {
+            runRaw(
+              `INSERT INTO kitchen_order_items (id, order_id, product_id, name, quantity, notes, unit_price, is_recipe, recipe_snapshot, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                crypto.randomUUID(), orderId, item.product_id, item.name || 'Producto',
+                Number(item.quantity) || 1, item.notes || null, Number(item.unit_price) || 0,
+                item.is_recipe ? 1 : 0,
+                item.recipe_snapshot ? JSON.stringify(item.recipe_snapshot) : null,
+                now,
+              ]
+            );
+          }
+          return { orderId };
+        });
+        return { data: { success: true, order_id: result.orderId }, error: null };
+      } catch (e: any) {
+        return reply.code(500).send({ data: null, error: { message: e?.message || 'Error al enviar la comanda', code: 'KITCHEN_ERROR' } });
+      }
+    }
+
+    if (fn === 'kitchen_status') {
+      const role = getRequestRole(request);
+      if (role === null) {
+        return reply.code(403).send({ data: null, error: { message: 'No hay sesión verificada. Inicie sesión nuevamente.', code: 'ROLE_FORBIDDEN' } });
+      }
+      if (!roleAllowed('kitchen_orders', 'update', role)) {
+        return reply.code(403).send({ data: null, error: { message: 'Tu rol no tiene permiso para actualizar comandas.', code: 'ROLE_FORBIDDEN' } });
+      }
+      const orderId = String(args?.order_id || '');
+      const status = String(args?.status || '');
+      const allowed = ['pending', 'preparing', 'ready', 'delivered', 'cancelled'];
+      if (!orderId || !allowed.includes(status)) {
+        return reply.code(400).send({ data: null, error: { message: 'Comanda o estado inválido' } });
+      }
+      const now = new Date().toISOString();
+      runRaw(
+        'UPDATE kitchen_orders SET status = ?, ready_at = CASE WHEN ? = \'ready\' THEN ? ELSE ready_at END, delivered_at = CASE WHEN ? = \'delivered\' THEN ? ELSE delivered_at END, updated_at = ? WHERE id = ?',
+        [status, status, now, status, now, now, orderId]
+      );
+      return { data: { success: true }, error: null };
+    }
+
     if (fn === 'void_sale') {
       const role = getRequestRole(request);
       if (role === null) {

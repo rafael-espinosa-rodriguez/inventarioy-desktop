@@ -842,6 +842,112 @@ const MIGRATIONS: { version: number; description: string; sql: string }[] = [
     ALTER TABLE daily_closings ADD COLUMN tips REAL DEFAULT 0;
     `,
   },
+  {
+    version: 18,
+    description: 'Precios multiples (spec 009): listas por rol, precios por producto y precio USD',
+    sql: `
+    CREATE TABLE IF NOT EXISTS price_lists (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      is_default INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_price_lists_user ON price_lists(user_id);
+
+    -- Lista asignada a cada rol (fija por rol, configurable).
+    CREATE TABLE IF NOT EXISTS price_list_roles (
+      price_list_id TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      PRIMARY KEY (price_list_id, role_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS product_prices (
+      id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      price_list_id TEXT NOT NULL,
+      price REAL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      UNIQUE (product_id, price_list_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_prices_list ON product_prices(price_list_id);
+    CREATE INDEX IF NOT EXISTS idx_product_prices_product ON product_prices(product_id);
+
+    -- Precio en USD (referencia y cobro usando la tasa configurada).
+    ALTER TABLE products ADD COLUMN price_usd REAL;
+
+    -- Historico de la lista usada en la venta.
+    ALTER TABLE sales ADD COLUMN price_list_id TEXT;
+    ALTER TABLE sales ADD COLUMN price_list_name TEXT;
+
+    -- Modulo "pricing" para dueño y economico (gestion de listas y precios).
+    UPDATE roles SET modules = (
+      SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(roles.modules)
+        UNION SELECT 'pricing'
+      )
+    ), updated_at = datetime('now')
+    WHERE id IN ('owner', 'economist') AND json_valid(modules);
+    `,
+  },
+  {
+    version: 19,
+    description: 'Comandas a cocina (spec 010): mesas, comandas e items con estados',
+    sql: `
+    CREATE TABLE IF NOT EXISTS tables (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      zone TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tables_user ON tables(user_id);
+
+    CREATE TABLE IF NOT EXISTS kitchen_orders (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      notes TEXT,
+      sale_id TEXT,
+      opened_at TEXT NOT NULL,
+      ready_at TEXT,
+      delivered_at TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_kitchen_orders_user ON kitchen_orders(user_id);
+    CREATE INDEX IF NOT EXISTS idx_kitchen_orders_status ON kitchen_orders(status);
+    CREATE INDEX IF NOT EXISTS idx_kitchen_orders_table ON kitchen_orders(table_id);
+
+    CREATE TABLE IF NOT EXISTS kitchen_order_items (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      notes TEXT,
+      unit_price REAL DEFAULT 0,
+      is_recipe INTEGER DEFAULT 0,
+      recipe_snapshot TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_kitchen_items_order ON kitchen_order_items(order_id);
+
+    -- Modulo "kitchen" para dueño y economico (pantalla de cocina).
+    UPDATE roles SET modules = (
+      SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(roles.modules)
+        UNION SELECT 'kitchen'
+      )
+    ), updated_at = datetime('now')
+    WHERE id IN ('owner', 'economist') AND json_valid(modules);
+    `,
+  },
 ];
 
 export function applyMigrations(db: any): void {

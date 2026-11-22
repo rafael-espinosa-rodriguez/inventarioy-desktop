@@ -56,6 +56,7 @@ export interface Product {
   sku?: string;
   barcode?: string;
   photo_path?: string;
+  price_usd?: number;
   created_at: string;
 }
 
@@ -89,6 +90,62 @@ export interface Warehouse {
   user_id: string;
   name: string;
   is_main: boolean;
+  created_at: string;
+}
+
+export interface PriceList {
+  id: string;
+  user_id: string;
+  name: string;
+  is_default: number | boolean;
+  is_active: number | boolean;
+  created_at: string;
+  updated_at: string;
+  role_ids?: string[];
+}
+
+export interface ProductPrice {
+  id: string;
+  product_id: string;
+  price_list_id: string;
+  price: number;
+  updated_at: string;
+}
+
+export interface RestaurantTable {
+  id: string;
+  user_id: string;
+  name: string;
+  zone?: string | null;
+  is_active: number | boolean;
+  created_at: string;
+}
+
+export interface KitchenOrder {
+  id: string;
+  user_id: string;
+  table_id: string;
+  status: 'pending' | 'preparing' | 'ready' | 'delivered' | 'cancelled';
+  notes?: string | null;
+  sale_id?: string | null;
+  opened_at: string;
+  ready_at?: string | null;
+  delivered_at?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KitchenOrderItem {
+  id: string;
+  order_id: string;
+  product_id: string;
+  name: string;
+  quantity: number;
+  notes?: string | null;
+  unit_price: number;
+  is_recipe?: number | boolean;
+  recipe_snapshot?: any;
   created_at: string;
 }
 
@@ -150,6 +207,9 @@ export interface Sale {
   subtotal?: number;
   register_id?: string | null;
   shift?: string;
+  price_list_id?: string | null;
+  price_list_name?: string | null;
+  kitchen_order_id?: string | null;
   voided_at?: string | null;
   void_reason?: string | null;
   voided_by?: string | null;
@@ -232,8 +292,8 @@ export const ROLE_LABELS: Record<string, string> = {
 };
 
 export const ROLE_MODULES: Record<string, string[]> = {
-  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings'],
-  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr'],
+  owner: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'settings', 'pricing', 'kitchen'],
+  economist: ['sales', 'inventory', 'movements', 'transit', 'recipes', 'consumption', 'closings', 'charts', 'analysis', 'filtered', 'hr', 'pricing', 'kitchen'],
   admin: ['inventory', 'movements', 'transit'],
   supervisor: ['sales', 'closings'],
   clerk: ['sales'],
@@ -252,6 +312,7 @@ export const MODULE_ROLES: Record<string, string[]> = {
   '/analysis': ['owner', 'economist'],
   '/charts': ['owner', 'economist'],
   '/filtered': ['owner', 'economist'],
+  '/kitchen': ['owner', 'economist'],
   '/settings': ['owner'],
   '/action-logs': ['owner', 'economist'],
 };
@@ -271,6 +332,7 @@ export const MODULE_BY_PATH: Record<string, string> = {
   '/filtered': 'filtered',
   '/settings': 'settings',
   '/action-logs': 'hr',
+  '/kitchen': 'kitchen',
 };
 
 function normalizeRoleModules(modules: any): string[] {
@@ -664,6 +726,11 @@ interface DatabaseState {
   payrollPeriod: PayrollPeriod | null;
   payrollLiquidations: PayrollLiquidation[];
   pendingAccounts: PendingAccount[];
+  priceLists: PriceList[];
+  productPrices: ProductPrice[];
+  tables: RestaurantTable[];
+  kitchenOrders: KitchenOrder[];
+  kitchenOrderItems: KitchenOrderItem[];
   accessPins: AccessPin[];
   roles: Role[];
   actionLogs: any[];
@@ -706,6 +773,17 @@ interface DatabaseState {
     reason: string
   ) => Promise<{ success: boolean; total?: number; error?: string }>;
   addCashMovement: (movement: Omit<CashMovement, 'id' | 'user_id' | 'created_at'>) => Promise<{ success: boolean; error?: string }>;
+  fetchPriceLists: () => Promise<void>;
+  savePriceList: (input: { id?: string; name: string; is_default: boolean; role_ids: string[] }) => Promise<{ success: boolean; error?: string }>;
+  deletePriceList: (id: string) => Promise<{ success: boolean; error?: string }>;
+  setProductPrices: (productId: string, prices: { price_list_id: string; price: number }[], price_usd?: number | null) => Promise<{ success: boolean; error?: string }>;
+  resolvePriceListForRole: (roleId: string | null) => PriceList | null;
+  fetchKitchenData: () => Promise<void>;
+  addTable: (name: string, zone?: string) => Promise<{ success: boolean; error?: string }>;
+  deleteTable: (id: string) => Promise<{ success: boolean; error?: string }>;
+  sendKitchenOrder: (tableId: string, items: any[], notes?: string) => Promise<{ success: boolean; orderId?: string; error?: string }>;
+  setKitchenStatus: (orderId: string, status: KitchenOrder['status']) => Promise<{ success: boolean; error?: string }>;
+  getOpenOrderForTable: (tableId: string) => KitchenOrder | null;
 
   addRecipe: (recipe: Omit<Recipe, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   updateRecipe: (id: string, updates: Partial<Recipe>) => Promise<void>;
@@ -846,6 +924,11 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
   productWarehouse: [],
   currentWarehouseId: null,
   pendingAccounts: [],
+  priceLists: [],
+  productPrices: [],
+  tables: [],
+  kitchenOrders: [],
+  kitchenOrderItems: [],
   isLoading: true,
   isFetchingWarehouses: false,
 
@@ -865,7 +948,7 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
 
     const user = useAuthStore.getState().user;
     if (!user) {
-      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollDrafts: [], payrollPeriod: null, payrollLiquidations: [], pendingAccounts: [], accessPins: [], roles: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
+      set({ products: [], movements: [], sales: [], recipes: [], employees: [], categories: [], transitItems: [], dailyClosings: [], hrDocuments: [], employeeDocuments: [], departments: [], payrollConfig: null, payrollEntries: [], employeeLoans: [], payrollDrafts: [], payrollPeriod: null, payrollLiquidations: [], pendingAccounts: [], priceLists: [], productPrices: [], tables: [], kitchenOrders: [], kitchenOrderItems: [], accessPins: [], roles: [], actionLogs: [], warehouses: [], productWarehouse: [], currentWarehouseId: null, isLoading: false });
       _isFetchingAll = false;
       return;
     }
@@ -890,6 +973,41 @@ export const useDatabaseStore = create<DatabaseState>()((set, get) => ({
       await delay(100);
     } catch (e) {
       logger.error('❌ Grupo 1 (productos/movimientos) falló:', e);
+    }
+
+    // ── Grupo 1b: listas de precios y precios por producto ──
+    try {
+      const [plRes, ppRes, plrRes] = await Promise.all([
+        queryWithRetry(() => localDb.from('price_lists').select('*').eq('user_id', user.id).order('name', { ascending: true })),
+        queryWithRetry(() => localDb.from('product_prices').select('*')),
+        queryWithRetry(() => localDb.from('price_list_roles').select('*')),
+      ]);
+      const rolesByList = new Map<string, string[]>();
+      for (const r of (plrRes.data || [])) {
+        const arr = rolesByList.get(r.price_list_id) || [];
+        arr.push(r.role_id);
+        rolesByList.set(r.price_list_id, arr);
+      }
+      const lists = (plRes.data || []).map((l: any) => ({ ...l, role_ids: rolesByList.get(l.id) || [] }));
+      set({ priceLists: lists, productPrices: ppRes.data || [] });
+    } catch (e) {
+      logger.error('❌ Grupo 1b (listas de precios) falló:', e);
+    }
+
+    // ── Grupo 1c: mesas y comandas ──
+    try {
+      const [tRes, oRes, iRes] = await Promise.all([
+        queryWithRetry(() => localDb.from('tables').select('*').eq('user_id', user.id).order('name', { ascending: true })),
+        queryWithRetry(() => localDb.from('kitchen_orders').select('*').eq('user_id', user.id).order('opened_at', { ascending: false })),
+        queryWithRetry(() => localDb.from('kitchen_order_items').select('*')),
+      ]);
+      set({
+        tables: tRes.data || [],
+        kitchenOrders: oRes.data || [],
+        kitchenOrderItems: iRes.data || [],
+      });
+    } catch (e) {
+      logger.error('❌ Grupo 1c (comandas) falló:', e);
     }
 
     // ── Grupo 2: Ventas y Recetas ──
@@ -2133,6 +2251,8 @@ addProduct: async (product) => {
         transferencia: sale.transferencia || 0,
         usd: sale.usd || 0,
         eur: sale.eur || 0,
+        price_list_id: sale.price_list_id || null,
+        price_list_name: sale.price_list_name || null,
         created_at: new Date().toISOString(),
       };
       const saleItems = sale.items.map(item => ({
@@ -2269,6 +2389,232 @@ const saleId = uuid();
       logger.error('Error en addCashMovement:', error);
       return { success: false, error: error?.message || 'Error al registrar el movimiento de caja' };
     }
+  },
+
+  fetchPriceLists: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    try {
+      const [plRes, ppRes, plrRes] = await Promise.all([
+        localDb.from('price_lists').select('*').eq('user_id', user.id).order('name', { ascending: true }),
+        localDb.from('product_prices').select('*'),
+        localDb.from('price_list_roles').select('*'),
+      ]);
+      const rolesByList = new Map<string, string[]>();
+      for (const r of (plrRes.data || [])) {
+        const arr = rolesByList.get(r.price_list_id) || [];
+        arr.push(r.role_id);
+        rolesByList.set(r.price_list_id, arr);
+      }
+      const lists = (plRes.data || []).map((l: any) => ({ ...l, role_ids: rolesByList.get(l.id) || [] }));
+      set({ priceLists: lists, productPrices: ppRes.data || [] });
+    } catch (e) {
+      logger.error('Error en fetchPriceLists:', e);
+    }
+  },
+
+  savePriceList: async ({ id, name, is_default, role_ids }) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No hay usuario autenticado' };
+    const trimmed = name.trim();
+    if (!trimmed) return { success: false, error: 'El nombre de la lista es obligatorio' };
+    const listId = id || uuid();
+    const now = new Date().toISOString();
+    try {
+      const commands: any[] = [];
+      if (is_default) {
+        commands.push({
+          table: 'price_lists',
+          method: 'update',
+          data: { is_default: 0, updated_at: now },
+          filters: [{ op: 'eq', column: 'user_id', value: user.id }],
+        });
+      }
+      if (id) {
+        commands.push({
+          table: 'price_lists',
+          method: 'update',
+          data: { name: trimmed, is_default: is_default ? 1 : 0, is_active: 1, updated_at: now },
+          filters: [{ op: 'eq', column: 'id', value: id }],
+        });
+      } else {
+        commands.push({
+          table: 'price_lists',
+          method: 'insert',
+          data: {
+            id: listId, user_id: user.id, name: trimmed,
+            is_default: is_default ? 1 : 0, is_active: 1, created_at: now, updated_at: now,
+          },
+        });
+      }
+      commands.push({
+        table: 'price_list_roles',
+        method: 'delete',
+        filters: [{ op: 'eq', column: 'price_list_id', value: listId }],
+      });
+      for (const roleId of role_ids) {
+        commands.push({
+          table: 'price_list_roles',
+          method: 'insert',
+          data: { price_list_id: listId, role_id: roleId },
+        });
+      }
+      const res = await localDb.batch(commands);
+      if (res.error) return { success: false, error: res.error.message };
+      await get().fetchPriceLists();
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en savePriceList:', error);
+      return { success: false, error: error?.message || 'Error al guardar la lista de precios' };
+    }
+  },
+
+  deletePriceList: async (id) => {
+    try {
+      const res = await localDb.batch([
+        { table: 'product_prices', method: 'delete', filters: [{ op: 'eq', column: 'price_list_id', value: id }] },
+        { table: 'price_list_roles', method: 'delete', filters: [{ op: 'eq', column: 'price_list_id', value: id }] },
+        { table: 'price_lists', method: 'delete', filters: [{ op: 'eq', column: 'id', value: id }] },
+      ]);
+      if (res.error) return { success: false, error: res.error.message };
+      await get().fetchPriceLists();
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en deletePriceList:', error);
+      return { success: false, error: error?.message || 'Error al eliminar la lista' };
+    }
+  },
+
+  setProductPrices: async (productId, prices, price_usd) => {
+    const now = new Date().toISOString();
+    try {
+      const commands: any[] = [
+        { table: 'product_prices', method: 'delete', filters: [{ op: 'eq', column: 'product_id', value: productId }] },
+      ];
+      for (const p of prices) {
+        if (!p.price_list_id) continue;
+        commands.push({
+          table: 'product_prices',
+          method: 'insert',
+          data: {
+            id: uuid(), product_id: productId, price_list_id: p.price_list_id,
+            price: Number(p.price) || 0, updated_at: now,
+          },
+        });
+      }
+      if (price_usd !== undefined) {
+        commands.push({
+          table: 'products',
+          method: 'update',
+          data: { price_usd: price_usd === null ? null : Number(price_usd) || 0, updated_at: now },
+          filters: [{ op: 'eq', column: 'id', value: productId }],
+        });
+      }
+      const res = await localDb.batch(commands);
+      if (res.error) return { success: false, error: res.error.message };
+      await get().fetchPriceLists();
+      if (price_usd !== undefined) {
+        set((state) => ({
+          products: state.products.map(p =>
+            p.id === productId ? { ...p, price_usd: price_usd === null ? undefined : Number(price_usd) || 0 } : p
+          ),
+        }));
+      }
+      return { success: true };
+    } catch (error: any) {
+      logger.error('Error en setProductPrices:', error);
+      return { success: false, error: error?.message || 'Error al guardar los precios' };
+    }
+  },
+
+  resolvePriceListForRole: (roleId) => {
+    const lists = get().priceLists.filter(l => l.is_active === true || l.is_active === 1);
+    if (lists.length === 0) return null;
+    if (roleId) {
+      const byRole = lists.find(l => (l.role_ids || []).includes(roleId));
+      if (byRole) return byRole;
+    }
+    return lists.find(l => l.is_default === true || l.is_default === 1) || lists[0] || null;
+  },
+
+  fetchKitchenData: async () => {
+    const user = useAuthStore.getState().user;
+    if (!user) return;
+    try {
+      const [tRes, oRes, iRes] = await Promise.all([
+        localDb.from('tables').select('*').eq('user_id', user.id).order('name', { ascending: true }),
+        localDb.from('kitchen_orders').select('*').eq('user_id', user.id).order('opened_at', { ascending: false }),
+        localDb.from('kitchen_order_items').select('*'),
+      ]);
+      set({
+        tables: tRes.data || [],
+        kitchenOrders: oRes.data || [],
+        kitchenOrderItems: iRes.data || [],
+      });
+    } catch (e) {
+      logger.error('Error en fetchKitchenData:', e);
+    }
+  },
+
+  addTable: async (name, zone) => {
+    const user = useAuthStore.getState().user;
+    if (!user) return { success: false, error: 'No hay usuario autenticado' };
+    const trimmed = name.trim();
+    if (!trimmed) return { success: false, error: 'El nombre de la mesa es obligatorio' };
+    try {
+      const { error } = await localDb.from('tables').insert({
+        id: uuid(), user_id: user.id, name: trimmed, zone: zone?.trim() || null,
+        is_active: 1, created_at: new Date().toISOString(),
+      });
+      if (error) return { success: false, error: error.message };
+      await get().fetchKitchenData();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Error al crear la mesa' };
+    }
+  },
+
+  deleteTable: async (id) => {
+    try {
+      const { error } = await localDb.from('tables').delete().eq('id', id);
+      if (error) return { success: false, error: error.message };
+      await get().fetchKitchenData();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Error al eliminar la mesa' };
+    }
+  },
+
+  sendKitchenOrder: async (tableId, items, notes) => {
+    try {
+      const { data, error } = await localDb.rpc('kitchen_send', { table_id: tableId, items, notes });
+      if (error || !data?.success) {
+        return { success: false, error: error?.message || (data as any)?.error || 'No se pudo enviar la comanda' };
+      }
+      await get().fetchKitchenData();
+      return { success: true, orderId: (data as any)?.order_id };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Error al enviar la comanda' };
+    }
+  },
+
+  setKitchenStatus: async (orderId, status) => {
+    try {
+      const { data, error } = await localDb.rpc('kitchen_status', { order_id: orderId, status });
+      if (error || !data?.success) {
+        return { success: false, error: error?.message || (data as any)?.error || 'No se pudo actualizar la comanda' };
+      }
+      await get().fetchKitchenData();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Error al actualizar la comanda' };
+    }
+  },
+
+  getOpenOrderForTable: (tableId) => {
+    return get().kitchenOrders.find(o =>
+      o.table_id === tableId && o.status !== 'delivered' && o.status !== 'cancelled'
+    ) || null;
   },
 
   consumeFromTransit: async (productId: string, qtyNeeded: number, reason?: string) => {

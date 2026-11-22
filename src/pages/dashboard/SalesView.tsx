@@ -67,7 +67,7 @@ function getUnitMin(unit: string | undefined, isRecipe?: boolean): number {
 
 export default function SalesView() {
   const { user } = useAuthStore();
-  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, addSale, voidSale, returnSale, addCashMovement, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData } = useDatabaseStore();
+  const { products, recipes, employees, sales, dailyClosings, pendingAccounts, transitItems, priceLists, productPrices, resolvePriceListForRole, verifiedRole, tables, kitchenOrders, kitchenOrderItems, sendKitchenOrder, fetchKitchenData, addSale, voidSale, returnSale, addCashMovement, createDailyClosing, getDailyClosings, createPendingAccount, addItemsToPendingAccount, chargePendingAccount, getPendingAccounts, togglePendingAccountType, updatePendingAccountItems, logAction, forceRefreshData } = useDatabaseStore();
   
   const activeProducts = products.filter(isActive);
 
@@ -105,6 +105,20 @@ export default function SalesView() {
   const [cashWithdrawals, setCashWithdrawals] = useState(0);
   const [cashDeposits, setCashDeposits] = useState(0);
   const [cashTips, setCashTips] = useState(0);
+  const [sessionRole, setSessionRole] = useState<string | null>(null);
+  const [selectedTableId, setSelectedTableId] = useState('');
+
+  // Rol real de la sesión del dispositivo (para resolver la lista de precios).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await localDb.getMySession();
+        if (alive) setSessionRole(res?.data?.session?.role || null);
+      } catch { /* sin sesión: se usa el rol verificado */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   const [dbCash, setDbCash] = useState({ opening: 0, withdrawals: 0, deposits: 0, tips: 0 });
   const [showCashModal, setShowCashModal] = useState(false);
   const [cashForm, setCashForm] = useState<{ type: 'RETIRO' | 'INGRESO' | 'PROPINA'; amount: number; note: string }>({
@@ -694,8 +708,20 @@ export default function SalesView() {
   }[]>([]);
 
   // Combine products and recipes for the catalog
+  const activePriceList = resolvePriceListForRole(sessionRole || verifiedRole || user?.role || 'owner');
+  const priceByProduct = new Map<string, number>();
+  if (activePriceList) {
+    for (const pp of productPrices) {
+      if (pp.price_list_id === activePriceList.id) priceByProduct.set(pp.product_id, Number(pp.price) || 0);
+    }
+  }
+
   const catalogItems = [
-    ...activeProducts.filter(p => p.is_individual).map(p => ({ ...p, is_recipe: false })),
+    ...activeProducts.filter(p => p.is_individual).map(p => ({
+      ...p,
+      is_recipe: false,
+      price: priceByProduct.get(p.id) ?? (Number(p.price) || 0),
+    })),
     ...recipes.map(r => {
       // Calculate cost of recipe
       const cost = r.ingredients.reduce((sum, ing) => {
@@ -856,6 +882,63 @@ export default function SalesView() {
     };
   }, [showScanner]);
 
+  const openOrderForSelectedTable = selectedTableId
+    ? kitchenOrders.find(o => o.table_id === selectedTableId && o.status !== 'delivered' && o.status !== 'cancelled') || null
+    : null;
+
+  const handleSendToKitchen = async () => {
+    if (!selectedTableId || cart.length === 0) {
+      toast.error('Seleccione una mesa y agregue productos');
+      return;
+    }
+    const res = await sendKitchenOrder(
+      selectedTableId,
+      cart.map(item => ({
+        product_id: item.product_id,
+        name: item.name,
+        quantity: item.quantity,
+        notes: item.discount_reason || null,
+        unit_price: item.price,
+        is_recipe: item.is_recipe,
+        recipe_snapshot: item.recipe_snapshot,
+      })),
+      notes
+    );
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo enviar la comanda');
+      return;
+    }
+    toast.success('Comanda enviada a cocina');
+    setCart([]);
+    setDiscount(0);
+    setNotes('');
+  };
+
+  const handleLoadComanda = () => {
+    if (!openOrderForSelectedTable) {
+      toast.error('La mesa no tiene una comanda abierta');
+      return;
+    }
+    const items = kitchenOrderItems
+      .filter(i => i.order_id === openOrderForSelectedTable.id)
+      .map(i => {
+        const product = products.find(p => p.id === i.product_id);
+        const unit = product?.unit || 'u';
+        return {
+          product_id: i.product_id,
+          name: i.name,
+          quantity: Number(i.quantity) || 1,
+          price: Number(i.unit_price) || 0,
+          cost: Number(product?.cost) || 0,
+          unit,
+          displayUnit: normalizeUnit(unit),
+          is_recipe: !!(i.is_recipe === 1 || i.is_recipe === true),
+          recipe_snapshot: i.recipe_snapshot,
+        };
+      });
+    setCart(items);
+    toast.success('Comanda cargada');
+  };
   const updateQuantity = (product_id: string, delta: number) => {
     setCart(current => current.map(item => {
       if (item.product_id === product_id) {
@@ -1032,6 +1115,9 @@ export default function SalesView() {
         is_account_house: isAccountHouse,
         notes: saleNotes,
         discount,
+        price_list_id: activePriceList?.id || null,
+        price_list_name: activePriceList?.name || null,
+        kitchen_order_id: openOrderForSelectedTable?.id || null,
         payment_method: paymentMethod,
         efectivo: isAccountHouse ? 0 : (Number(salePaymentMethod.efectivo) || 0),
         transferencia: isAccountHouse ? 0 : (user?.cupTransferEnabled ? (Number(salePaymentMethod.transferencia) || 0) : 0),
@@ -1058,6 +1144,8 @@ export default function SalesView() {
       // Limpiar estados de venta exitosa
       setCart([]);
       setDiscount(0);
+      setSelectedTableId('');
+      fetchKitchenData().catch(() => {});
       setNotes('');
       setShowPreview(false);
       setPaymentError(null);
@@ -1160,6 +1248,11 @@ setShowTicket(true);
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {activePriceList && (
+              <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wide text-primary" title="Lista de precios asignada a tu rol">
+                Lista: {activePriceList.name}
+              </span>
+            )}
             <div className="text-right">
               <p className="text-xs text-text-secondary">Ventas del día</p>
               <p className="font-mono font-bold text-primary">${todayTotal.toFixed(2)}</p>
@@ -1422,6 +1515,11 @@ setShowTicket(true);
                 <p className="mt-1 font-mono text-sm font-bold text-primary drop-shadow-[0_0_8px_rgba(205,164,52,0.3)]">
                   ${product.price.toFixed(2)}
                 </p>
+                {Number((product as any).price_usd) > 0 && (
+                  <p className="font-mono text-[10px] text-text-secondary">
+                    ≈ ${Number((product as any).price_usd).toFixed(2)} USD
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-text-secondary">
                   {product.is_recipe ? (
                     <span className="flex items-center justify-center gap-1">
@@ -1636,6 +1734,49 @@ setShowTicket(true);
                   <option value="VENTA_RAPIDA">Venta Rápida</option>
                 </select>
               </div>
+              {tables.length > 0 && (
+                <div className="sm:col-span-2">
+                  <label htmlFor="table_select" className="text-xs font-medium text-text-secondary block mb-1">Mesa (comandas a cocina)</label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      id="table_select"
+                      className="min-w-[160px] flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={selectedTableId}
+                      onChange={(e) => setSelectedTableId(e.target.value)}
+                    >
+                      <option value="">Sin mesa</option>
+                      {tables.map(table => {
+                        const occupied = kitchenOrders.some(o =>
+                          o.table_id === table.id && o.status !== 'delivered' && o.status !== 'cancelled'
+                        );
+                        return (
+                          <option key={table.id} value={table.id}>
+                            {table.name}{occupied ? ' (ocupada)' : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSendToKitchen}
+                      disabled={!selectedTableId || cart.length === 0}
+                    >
+                      Enviar a cocina
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleLoadComanda}
+                      disabled={!selectedTableId || !openOrderForSelectedTable}
+                    >
+                      Cargar comanda
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div>
                 <label htmlFor="seller" className="text-xs font-medium text-text-secondary block mb-1">Vendedor</label>
                 <select

@@ -29,6 +29,8 @@ const FEATURES = [
   'Exportación de datos a Excel',
   'Importación de inventario desde Excel o CSV',
   'Códigos de barras, SKU y fotos de productos',
+  'Listas de precios por rol (minorista, mayorista y más)',
+  'Comandas a cocina por LAN con estados',
   'Devoluciones y anulación de ventas con reposición de stock',
   'Multi-caja en red local (LAN)',
   'Cajas en tablets y celulares por WiFi (sin instalar nada)',

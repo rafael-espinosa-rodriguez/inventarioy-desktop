@@ -48,6 +48,22 @@ export default function SettingsView() {
   const [cajas, setCajas] = useState<any[]>([]);
   const [newCajaName, setNewCajaName] = useState('');
   const [loadingCajas, setLoadingCajas] = useState(false);
+  const priceLists = useDatabaseStore((state) => state.priceLists);
+  const roles = useDatabaseStore((state) => state.roles);
+  const savePriceList = useDatabaseStore((state) => state.savePriceList);
+  const deletePriceList = useDatabaseStore((state) => state.deletePriceList);
+  const fetchPriceLists = useDatabaseStore((state) => state.fetchPriceLists);
+  const [listName, setListName] = useState('');
+  const [listDefault, setListDefault] = useState(false);
+  const [listRoles, setListRoles] = useState<string[]>([]);
+  const [editingListId, setEditingListId] = useState<string | null>(null);
+  const [listToDelete, setListToDelete] = useState<any>(null);
+  const tables = useDatabaseStore((state) => state.tables);
+  const addTable = useDatabaseStore((state) => state.addTable);
+  const deleteTable = useDatabaseStore((state) => state.deleteTable);
+  const [tableName, setTableName] = useState('');
+  const [tableZone, setTableZone] = useState('');
+  const [tableToDelete, setTableToDelete] = useState<any>(null);
   const [cajaToDelete, setCajaToDelete] = useState<any>(null);
   const [doubleShiftEnabled, setDoubleShiftEnabled] = useState(false);
   const [shiftCutoffHour, setShiftCutoffHour] = useState(15);
@@ -110,6 +126,7 @@ export default function SettingsView() {
   useEffect(() => {
     if (user) {
       loadCajas();
+      fetchPriceLists();
       loadShiftSettings();
       loadBackupStatus();
       loadAlertSettings();
@@ -262,6 +279,46 @@ export default function SettingsView() {
     }
     await loadCajas();
     toast.success('Caja eliminada');
+  };
+
+  const resetListForm = () => {
+    setListName('');
+    setListDefault(false);
+    setListRoles([]);
+    setEditingListId(null);
+  };
+
+  const handleSaveList = async () => {
+    const res = await savePriceList({
+      id: editingListId || undefined,
+      name: listName,
+      is_default: listDefault,
+      role_ids: listRoles,
+    });
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo guardar la lista');
+      return;
+    }
+    toast.success(editingListId ? 'Lista actualizada' : 'Lista creada');
+    resetListForm();
+  };
+
+  const handleEditList = (list: any) => {
+    setEditingListId(list.id);
+    setListName(list.name || '');
+    setListDefault(list.is_default === true || list.is_default === 1);
+    setListRoles(Array.isArray(list.role_ids) ? list.role_ids : []);
+  };
+
+  const handleAddTable = async () => {
+    const res = await addTable(tableName, tableZone);
+    if (!res.success) {
+      toast.error(res.error || 'No se pudo crear la mesa');
+      return;
+    }
+    toast.success('Mesa creada');
+    setTableName('');
+    setTableZone('');
   };
 
   useEffect(() => {
@@ -874,6 +931,191 @@ export default function SettingsView() {
           }}
           title="Eliminar punto de venta"
           description={`¿Seguro que deseas eliminar el punto de venta "${cajaToDelete?.name || ''}"? Las ventas ya registradas conservan su referencia.`}
+          confirmLabel="Eliminar"
+          cancelLabel="Cancelar"
+        />
+
+        {/* ============================================
+            SECCIÓN 3.4: LISTAS DE PRECIOS (spec 009)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-1 flex items-center gap-2">
+            <DollarSign className="h-5 w-5 text-primary" />
+            Listas de precios
+          </h2>
+          <p className="mb-4 text-xs text-text-secondary">
+            Cada rol usa una lista fija en Ventas. Si un producto no tiene precio en esa lista, se usa su precio base.
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label htmlFor="price_list_name">Nombre de la lista</Label>
+              <Input
+                id="price_list_name"
+                value={listName}
+                onChange={(e) => setListName(e.target.value)}
+                placeholder="Ej: Minorista, Mayorista"
+              />
+            </div>
+            <div className="flex items-end gap-3">
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={listDefault}
+                  onChange={(e) => setListDefault(e.target.checked)}
+                />
+                Predeterminada
+              </label>
+              <Button onClick={handleSaveList} disabled={!listName.trim()}>
+                {editingListId ? 'Guardar' : 'Crear lista'}
+              </Button>
+              {editingListId && (
+                <Button variant="outline" onClick={resetListForm}>Cancelar</Button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-xs text-text-secondary mb-2">Roles que usan esta lista:</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              {roles.map((role) => (
+                <label key={role.id} className="flex items-center gap-1.5 text-xs text-text">
+                  <input
+                    id={`price_role_${role.id}`}
+                    type="checkbox"
+                    checked={listRoles.includes(role.id)}
+                    onChange={() => setListRoles(prev =>
+                      prev.includes(role.id) ? prev.filter(id => id !== role.id) : [...prev, role.id]
+                    )}
+                  />
+                  {role.name}
+                </label>
+              ))}
+              {roles.length === 0 && <span className="text-xs text-text-secondary">No hay roles configurados.</span>}
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-2">
+            {priceLists.length === 0 ? (
+              <p className="text-sm text-text-secondary">Aún no hay listas de precios.</p>
+            ) : (
+              priceLists.map((list) => (
+                <div key={list.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg px-3 py-2">
+                  <div>
+                    <p className="text-sm text-text">
+                      {list.name}
+                      {(list.is_default === true || list.is_default === 1) && (
+                        <span className="ml-2 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-primary">
+                          Predeterminada
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-xs text-text-secondary">
+                      Roles: {(list.role_ids || []).map(id => roles.find(r => r.id === id)?.name || id).join(', ') || 'ninguno'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => handleEditList(list)} title="Editar lista">
+                      <Settings className="h-4 w-4" />
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setListToDelete(list)} title="Eliminar lista">
+                      <Trash2 className="h-4 w-4 text-danger" />
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <ConfirmDialog
+          isOpen={!!listToDelete}
+          onClose={() => setListToDelete(null)}
+          onConfirm={async () => {
+            if (listToDelete) {
+              const res = await deletePriceList(listToDelete.id);
+              if (!res.success) toast.error(res.error || 'No se pudo eliminar la lista');
+              else toast.success('Lista eliminada');
+            }
+            setListToDelete(null);
+          }}
+          title="Eliminar lista de precios"
+          description={`¿Seguro que deseas eliminar la lista "${listToDelete?.name || ''}"? Los precios asociados se borrarán.`}
+          confirmLabel="Eliminar"
+          cancelLabel="Cancelar"
+        />
+
+        {/* ============================================
+            SECCIÓN 3.45: MESAS (comandas a cocina)
+            ============================================ */}
+        <div className="rounded-xl border border-border/50 bg-surface/80 backdrop-blur-sm p-6 shadow-sm transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_20px_-5px_rgba(255,193,7,0.15)]">
+          <h2 className="text-lg font-semibold text-text mb-1 flex items-center gap-2">
+            <Store className="h-5 w-5 text-primary" />
+            Mesas (comandas a cocina)
+          </h2>
+          <p className="mb-4 text-xs text-text-secondary">
+            Cree las mesas del salón. En Ventas podrá enviar la comanda a la pantalla de Cocina.
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <Label htmlFor="table_name">Nombre de la mesa</Label>
+              <Input
+                id="table_name"
+                value={tableName}
+                onChange={(e) => setTableName(e.target.value)}
+                placeholder="Ej: Mesa 1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="table_zone">Zona (opcional)</Label>
+              <Input
+                id="table_zone"
+                value={tableZone}
+                onChange={(e) => setTableZone(e.target.value)}
+                placeholder="Ej: Salón, Terraza"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={handleAddTable} disabled={!tableName.trim()}>
+                <Plus className="mr-2 h-4 w-4" />
+                Crear mesa
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {tables.length === 0 ? (
+              <p className="text-sm text-text-secondary">Aún no hay mesas registradas.</p>
+            ) : (
+              tables.map(table => (
+                <div key={table.id} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-bg px-3 py-2">
+                  <div>
+                    <p className="text-sm text-text">{table.name}</p>
+                    <p className="text-xs text-text-secondary">{table.zone || 'Sin zona'}</p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setTableToDelete(table)} title="Eliminar mesa">
+                    <Trash2 className="h-4 w-4 text-danger" />
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <ConfirmDialog
+          isOpen={!!tableToDelete}
+          onClose={() => setTableToDelete(null)}
+          onConfirm={async () => {
+            if (tableToDelete) {
+              const res = await deleteTable(tableToDelete.id);
+              if (!res.success) toast.error(res.error || 'No se pudo eliminar la mesa');
+              else toast.success('Mesa eliminada');
+            }
+            setTableToDelete(null);
+          }}
+          title="Eliminar mesa"
+          description={`¿Seguro que deseas eliminar "${tableToDelete?.name || ''}"?`}
           confirmLabel="Eliminar"
           cancelLabel="Cancelar"
         />
