@@ -20,6 +20,9 @@ test('landing renderiza e interactúa sin red externa', async ({ page }) => {
   await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 30000 });
 
   await expect(page.getByText('incluso sin internet', { exact: false }).first()).toBeVisible({ timeout: 30000 });
+  const logo = page.locator('img[alt="InventarioY"]').first();
+  await expect(logo).toBeVisible();
+  await expect.poll(async () => logo.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
   await expect(page.getByText('¿Desea aprender a usar la App?', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'No, gracias' }).click();
 
