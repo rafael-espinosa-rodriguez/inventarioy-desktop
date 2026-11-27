@@ -1,6 +1,6 @@
 # Spec 009 — Precios múltiples (solo productos)
 
-> **Estado: cerrado (2026-10-09)** — implementado; suite 53/53.
+> **Estado: cerrado (2026-10-09)** — implementado; suite 63/63.
 
 ## 1. Contexto
 La app tenía un único precio por producto. Negocios con mostrador y mayorista

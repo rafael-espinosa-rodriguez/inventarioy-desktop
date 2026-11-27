@@ -966,7 +966,7 @@ export default function SettingsView() {
                 />
                 Predeterminada
               </label>
-              <Button onClick={handleSaveList} disabled={!listName.trim()}>
+              <Button id="price_list_save" onClick={handleSaveList} disabled={!listName.trim()}>
                 {editingListId ? 'Guardar' : 'Crear lista'}
               </Button>
               {editingListId && (
@@ -1015,10 +1015,10 @@ export default function SettingsView() {
                     </p>
                   </div>
                   <div className="flex items-center gap-1">
-                    <Button size="sm" variant="ghost" onClick={() => handleEditList(list)} title="Editar lista">
+                    <Button size="sm" variant="ghost" onClick={() => handleEditList(list)} title="Editar lista" aria-label={`Editar lista ${list.name}`}>
                       <Settings className="h-4 w-4" />
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setListToDelete(list)} title="Eliminar lista">
+                    <Button size="sm" variant="ghost" onClick={() => setListToDelete(list)} title="Eliminar lista" aria-label={`Eliminar lista ${list.name}`}>
                       <Trash2 className="h-4 w-4 text-danger" />
                     </Button>
                   </div>
@@ -1094,7 +1094,7 @@ export default function SettingsView() {
                     <p className="text-sm text-text">{table.name}</p>
                     <p className="text-xs text-text-secondary">{table.zone || 'Sin zona'}</p>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => setTableToDelete(table)} title="Eliminar mesa">
+                  <Button size="sm" variant="ghost" onClick={() => setTableToDelete(table)} title="Eliminar mesa" aria-label={`Eliminar mesa ${table.name}`}>
                     <Trash2 className="h-4 w-4 text-danger" />
                   </Button>
                 </div>

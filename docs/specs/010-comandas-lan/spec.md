@@ -1,6 +1,6 @@
 # Spec 010 — Comandas a cocina por LAN
 
-> **Estado: cerrado (2026-10-09)** — implementado; suite 53/53.
+> **Estado: cerrado (2026-10-09)** — implementado; suite 63/63.
 
 ## 1. Contexto
 El POS no tenía mesas ni comandas: la cocina no veía pedidos y no había forma de

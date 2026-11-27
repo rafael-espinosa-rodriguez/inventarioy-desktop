@@ -232,3 +232,106 @@ test('UI: el dependiente usa la lista asignada a su rol', async ({ page, request
   const card = page.locator('button', { hasText: `precio clerk qa ${suffix}` }).first();
   await expect(card).toContainText('$120.00');
 });
+async function createRoleWithPin(request: any, roleId: string, modules: string[], pin: string) {
+  const existing = await queryRows(request, 'roles', [{ op: 'eq', column: 'id', value: roleId }]);
+  if (existing.length === 0) {
+    await insertRow(request, 'roles', {
+      id: roleId, user_id: 'owner', name: roleId, modules: JSON.stringify(modules),
+      is_active: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    });
+  }
+  const salt = randomBytes(16);
+  const hash = scryptSync(pin, salt, 64);
+  await insertRow(request, 'access_pins', {
+    id: `pin-${roleId}`, user_id: 'owner',
+    pin_hash: `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`,
+    role: roleId, pin_name: roleId, is_active: 1, failed_attempts: 0,
+    created_at: new Date().toISOString(),
+  });
+}
+
+test('un rol personalizado con módulo pricing puede gestionar listas', async ({ request }) => {
+  const roleId = `pricingqa-${suffix}`;
+  await createRoleWithPin(request, roleId, ['sales', 'pricing'], '7777');
+  const login = await call(request, 'POST', '/api/auth/login', { pin: '7777' }, false);
+  expect(login.j?.data?.success).toBe(true);
+  const r = await call(
+    request, 'POST', '/api/query',
+    {
+      table: 'price_lists', method: 'insert',
+      data: {
+        id: `custom-list-${suffix}`, user_id: 'owner', name: `Custom QA ${suffix}`,
+        is_default: 0, is_active: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      },
+    },
+    true,
+    { 'x-inventarioy-token': login.j.data.token, 'x-inventarioy-session': login.j.data.sessionToken }
+  );
+  expect(r.status).toBe(200);
+  expect(r.j?.error).toBeFalsy();
+});
+
+test('sin lista asignada al rol se usa la predeterminada', async ({ page, request }) => {
+  const { productId } = await seedProduct(request, `precio fallback qa ${suffix}`, 100);
+  // Dejar una sola lista predeterminada.
+  await call(request, 'POST', '/api/query', {
+    table: 'price_lists', method: 'update', data: { is_default: 0 },
+    filters: [{ op: 'eq', column: 'user_id', value: 'owner' }],
+  });
+  const defaultListId = await createList(request, `Default QA ${suffix}`, [], true);
+  await insertRow(request, 'product_prices', {
+    id: `pp-fallback-${suffix}`, product_id: productId, price_list_id: defaultListId,
+    price: 90, updated_at: new Date().toISOString(),
+  });
+  const roleId = `fallbackqa-${suffix}`;
+  await createRoleWithPin(request, roleId, ['sales'], '6666');
+
+  await loginUi(page, '6666');
+  await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await dismissPinModal(page, '6666');
+
+  await expect(page.getByText(`Lista: Default QA ${suffix}`)).toBeVisible({ timeout: 15000 });
+  const card = page.locator('button', { hasText: `precio fallback qa ${suffix}` }).first();
+  await expect(card).toContainText('$90.00');
+});
+
+test('UI: editar y eliminar una lista de precios', async ({ page, request }) => {
+  const listId = await createList(request, `Editable QA ${suffix}`, ['owner']);
+  await loginUi(page, '1234');
+  await page.goto(APP_URL + '/dashboard/settings', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await dismissPinModal(page);
+
+  await page.getByLabel(`Editar lista Editable QA ${suffix}`).click();
+  await page.locator('#price_list_name').fill(`Editada QA ${suffix}`);
+  await page.locator('#price_list_save').click();
+  await expect(page.getByText(`Editada QA ${suffix}`).first()).toBeVisible({ timeout: 15000 });
+
+  await page.getByLabel(`Eliminar lista Editada QA ${suffix}`).click();
+  await page.getByRole('dialog').filter({ hasText: 'Eliminar lista de precios' }).getByRole('button', { name: 'Eliminar' }).click();
+  await expect(page.getByText(`Editada QA ${suffix}`)).toHaveCount(0, { timeout: 15000 });
+
+  const rows = await queryRows(request, 'price_lists', [{ op: 'eq', column: 'id', value: listId }]);
+  expect(rows.length).toBe(0);
+});
+
+test('la venta en USD guarda el monto y la lista', async ({ request }) => {
+  const listId = await createList(request, `USD QA ${suffix}`, ['owner']);
+  const { productId } = await seedProduct(request, `precio usd qa ${suffix}`, 100);
+  const saleRes = await call(request, 'POST', '/api/rpc', {
+    fn: 'sale',
+    args: {
+      sale: {
+        items: [{ product_id: productId, quantity: 1, unit_cost: 50, selling_price: 150, subtotal: 150, is_recipe: false }],
+        total_amount: 150, date: new Date().toISOString(), sale_type: 'VENTA_RAPIDA',
+        discount: 0, payment_method: 'USD: 2', efectivo: 0, usd: 2,
+        price_list_id: listId, price_list_name: `USD QA ${suffix}`,
+      },
+    },
+  });
+  expect(saleRes.j?.data?.success).toBe(true);
+  const rows = await queryRows(request, 'sales', [{ op: 'eq', column: 'id', value: saleRes.j.data.sale.id }]);
+  expect(Number(rows[0].usd)).toBe(2);
+  expect(rows[0].price_list_id).toBe(listId);
+});

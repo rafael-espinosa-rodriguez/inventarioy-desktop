@@ -211,6 +211,14 @@ test('cobrar la mesa cierra la comanda y descuenta stock', async ({ request }) =
   const orders = await queryRows(request, 'kitchen_orders', [{ op: 'eq', column: 'id', value: orderId }]);
   expect(orders[0].status).toBe('delivered');
   expect(orders[0].sale_id).toBeTruthy();
+
+  // Stock: la venta consume 2 del tránsito y deja movimiento SALIDA.
+  const transit = await queryRows(request, 'transit_items', [{ op: 'eq', column: 'product_id', value: productId }]);
+  expect(Number(transit[0].remaining)).toBe(3);
+  const product = await queryRows(request, 'products', [{ op: 'eq', column: 'id', value: productId }]);
+  expect(Number(product[0].in_transit)).toBe(3);
+  const movements = await queryRows(request, 'movements', [{ op: 'eq', column: 'product_id', value: productId }]);
+  expect(movements.some(m => m.type === 'SALIDA' && String(m.reason).startsWith('Venta #'))).toBe(true);
 });
 
 test('UI: la pantalla de Cocina muestra la comanda y avanza el estado', async ({ page, request }) => {
@@ -233,4 +241,179 @@ test('UI: la pantalla de Cocina muestra la comanda y avanza el estado', async ({
 
   const orders = await queryRows(request, 'kitchen_orders', [{ op: 'eq', column: 'table_id', value: tableId }]);
   expect(orders[0].status).toBe('preparing');
+});
+async function createRoleWithPin(request: any, roleId: string, modules: string[], pin: string) {
+  const existing = await queryRows(request, 'roles', [{ op: 'eq', column: 'id', value: roleId }]);
+  if (existing.length === 0) {
+    await insertRow(request, 'roles', {
+      id: roleId, user_id: 'owner', name: roleId, modules: JSON.stringify(modules),
+      is_active: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    });
+  }
+  const salt = randomBytes(16);
+  const hash = scryptSync(pin, salt, 64);
+  await insertRow(request, 'access_pins', {
+    id: `pin-${roleId}`, user_id: 'owner',
+    pin_hash: `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`,
+    role: roleId, pin_name: roleId, is_active: 1, failed_attempts: 0,
+    created_at: new Date().toISOString(),
+  });
+}
+
+async function seedSimpleProduct(request: any, name: string) {
+  const id = `kp-${suffix}-${Math.random().toString(36).slice(2, 6)}`;
+  await insertRow(request, 'products', {
+    id, user_id: 'owner', name, category: 'Otros', unit: 'u',
+    quantity: 10, price: 100, cost: 50, rop: 0, eoq: 0, is_individual: 1, is_active: 1,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  });
+  return id;
+}
+
+test('cancelar una comanda permite abrir una nueva', async ({ request }) => {
+  const tableId = await seedTable(request, `Mesa Cancel ${suffix}`);
+  const first = await call(request, 'POST', '/api/rpc', {
+    fn: 'kitchen_send',
+    args: { table_id: tableId, items: [{ product_id: 'p1', name: 'Plato', quantity: 1 }] },
+  });
+  const firstId = first.j.data.order_id;
+  const cancel = await call(request, 'POST', '/api/rpc', { fn: 'kitchen_status', args: { order_id: firstId, status: 'cancelled' } });
+  expect(cancel.j?.data?.success).toBe(true);
+
+  const second = await call(request, 'POST', '/api/rpc', {
+    fn: 'kitchen_send',
+    args: { table_id: tableId, items: [{ product_id: 'p2', name: 'Bebida', quantity: 1 }] },
+  });
+  expect(second.j?.data?.success).toBe(true);
+  expect(second.j.data.order_id).not.toBe(firstId);
+
+  const open = await queryRows(request, 'kitchen_orders', [{ op: 'eq', column: 'table_id', value: tableId }]);
+  expect(open.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length).toBe(1);
+});
+
+test('dos envíos simultáneos a la misma mesa no duplican la comanda', async ({ request }) => {
+  const tableId = await seedTable(request, `Mesa Race ${suffix}`);
+  const [a, b] = await Promise.all([
+    call(request, 'POST', '/api/rpc', {
+      fn: 'kitchen_send',
+      args: { table_id: tableId, items: [{ product_id: 'r1', name: 'A', quantity: 1 }] },
+    }),
+    call(request, 'POST', '/api/rpc', {
+      fn: 'kitchen_send',
+      args: { table_id: tableId, items: [{ product_id: 'r2', name: 'B', quantity: 1 }] },
+    }),
+  ]);
+  expect(a.j?.data?.success).toBe(true);
+  expect(b.j?.data?.success).toBe(true);
+  const orders = await queryRows(request, 'kitchen_orders', [{ op: 'eq', column: 'table_id', value: tableId }]);
+  expect(orders.length).toBe(1);
+  const items = await queryRows(request, 'kitchen_order_items', [{ op: 'eq', column: 'order_id', value: orders[0].id }]);
+  expect(items.length).toBe(2);
+});
+
+test('un rol personalizado de Cocina puede operar la pantalla y no vender', async ({ page, request }) => {
+  const roleId = `cookqa-${suffix}`;
+  await createRoleWithPin(request, roleId, ['kitchen'], '9182');
+  const tableId = await seedTable(request, `Mesa Cook ${suffix}`);
+  const order = await call(request, 'POST', '/api/rpc', {
+    fn: 'kitchen_send',
+    args: { table_id: tableId, items: [{ product_id: 'c1', name: 'Plato Cook', quantity: 1 }] },
+  });
+  const orderId = order.j.data.order_id;
+
+  // API: puede actualizar comandas, no puede vender.
+  const login = await call(request, 'POST', '/api/auth/login', { pin: '9182' }, false);
+  expect(login.j?.data?.success).toBe(true);
+  const headers = { 'x-inventarioy-token': login.j.data.token, 'x-inventarioy-session': login.j.data.sessionToken };
+  const status = await call(request, 'POST', '/api/rpc', { fn: 'kitchen_status', args: { order_id: orderId, status: 'preparing' } }, true, headers);
+  expect(status.j?.data?.success).toBe(true);
+  const saleDenied = await call(request, 'POST', '/api/query', {
+    table: 'sales', method: 'insert',
+    data: { id: `denied-sale-${suffix}`, user_id: 'owner', total_amount: 1, date: new Date().toISOString(), created_at: new Date().toISOString() },
+  }, true, headers);
+  expect(saleDenied.status).toBe(403);
+
+  // UI: la pantalla de Cocina abre con su PIN.
+  await loginUi(page, '9182');
+  await page.goto(APP_URL + '/dashboard/kitchen', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await dismissPinModal(page, '9182');
+  await expect(page.getByRole('heading', { name: 'Cocina' })).toBeVisible({ timeout: 15000 });
+});
+
+test('UI: crear y eliminar una mesa desde Configuración', async ({ page, request }) => {
+  const tableName = `Mesa Config ${suffix}`;
+  await loginUi(page, '1234');
+  await page.goto(APP_URL + '/dashboard/settings', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2000);
+  await dismissPinModal(page);
+
+  await page.locator('#table_name').fill(tableName);
+  await page.locator('#table_zone').fill('Terraza');
+  await page.getByRole('button', { name: 'Crear mesa' }).click();
+  await expect(page.getByText(tableName).first()).toBeVisible({ timeout: 15000 });
+
+  let rows = await queryRows(request, 'tables', [{ op: 'eq', column: 'name', value: tableName }]);
+  expect(rows.length).toBe(1);
+
+  await page.getByLabel(`Eliminar mesa ${tableName}`).click();
+  await page.getByRole('dialog').filter({ hasText: 'Eliminar mesa' }).getByRole('button', { name: 'Eliminar' }).click();
+  await expect(page.getByText(tableName)).toHaveCount(0, { timeout: 15000 });
+
+  rows = await queryRows(request, 'tables', [{ op: 'eq', column: 'name', value: tableName }]);
+  expect(rows.length).toBe(0);
+});
+
+test('UI: agregar ítems a una comanda ya enviada', async ({ page, request }) => {
+  const tableName = `Mesa Add ${suffix}`;
+  const tableId = await seedTable(request, tableName);
+  const productA = await seedSimpleProduct(request, `Comanda A ${suffix}`);
+  const productB = await seedSimpleProduct(request, `Comanda B ${suffix}`);
+  const send = await call(request, 'POST', '/api/rpc', {
+    fn: 'kitchen_send',
+    args: { table_id: tableId, items: [{ product_id: productA, name: `Comanda A ${suffix}`, quantity: 1, unit_price: 100 }] },
+  });
+  const orderId = send.j.data.order_id;
+
+  await loginUi(page, '1234');
+  await page.goto(APP_URL + '/dashboard/sales', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(2500);
+  await dismissPinModal(page);
+
+  const saleType = page.locator('#saleType');
+  if (!(await saleType.isVisible().catch(() => false))) {
+    await page.locator('button').filter({ hasText: 'Total' }).first().click();
+  }
+  await page.locator('#table_select').selectOption({ label: `${tableName} (ocupada)` });
+  const productCard = page.locator('button').filter({
+    has: page.locator('h3', { hasText: new RegExp(`^Comanda B ${suffix}$`, 'i') }),
+  }).first();
+  await productCard.click();
+  await page.getByRole('button', { name: 'Enviar a cocina' }).click();
+
+  await expect.poll(async () => {
+    const items = await queryRows(request, 'kitchen_order_items', [{ op: 'eq', column: 'order_id', value: orderId }]);
+    return items.length;
+  }, { timeout: 15000 }).toBe(2);
+});
+test('otra PC/tablet en la LAN ve la comanda (contexto separado)', async ({ browser, request }) => {
+  const tableName = `Mesa LAN ${suffix}`;
+  const tableId = await seedTable(request, tableName);
+  await call(request, 'POST', '/api/rpc', {
+    fn: 'kitchen_send',
+    args: { table_id: tableId, items: [{ product_id: 'lan1', name: `Plato LAN ${suffix}`, quantity: 1 }] },
+  });
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await loginUi(page, '1234');
+    await page.goto(APP_URL + '/dashboard/kitchen', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(2500);
+    await dismissPinModal(page);
+    await expect(page.getByText(tableName).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(`Plato LAN ${suffix}`).first()).toBeVisible();
+  } finally {
+    await context.close();
+  }
 });

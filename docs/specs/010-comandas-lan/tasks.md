@@ -6,5 +6,5 @@
 - [x] T4: Configuración → Mesas.
 - [x] T5: Ventas → mesa, enviar y cargar comanda.
 - [x] T6: Pantalla Cocina con polling y estados.
-- [x] T7: Tests e2e (4) + suite completa 53/53.
+- [x] T7: Tests e2e (10) + suite completa 63/63.
 - [x] T8: Manual/landing + instalador/entrega + commit.

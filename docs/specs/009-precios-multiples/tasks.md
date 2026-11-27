@@ -5,5 +5,5 @@
 - [x] T3: Configuración → Listas de precios.
 - [x] T4: Almacén → precios por lista + USD.
 - [x] T5: POS con lista por rol y venta con histórico.
-- [x] T6: Tests e2e (4) + suite completa 53/53.
+- [x] T6: Tests e2e (8) + suite completa 63/63.
 - [x] T7: Manual/landing + instalador/entrega + commit.
